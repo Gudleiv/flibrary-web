@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# сгенерированные из OpenAPI типы
+packages/contract/src/generated/
+
+# локальные данные: коллекция, app.db, кэш обложек, архивы фикстур
+data/
+!data/.gitkeep
+
+# коллекционная БД, если её положили рядом с репозиторием (сотни мегабайт)
+*.db
+*.db-shm
+*.db-wal
+
+.env
+.env.local
+
+coverage/
+*.log
+.DS_Store

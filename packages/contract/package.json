@@ -1,0 +1,22 @@
+{
+  "name": "@flibrary/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Контракт API: OpenAPI-спека и генерируемые из неё TS-типы и JSON Schema поискового запроса",
+  "exports": {
+    ".": "./src/index.ts",
+    "./openapi.yaml": "./openapi.yaml"
+  },
+  "scripts": {
+    "build": "openapi-typescript openapi.yaml -o src/generated/openapi.d.ts && node scripts/extract-search-schema.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.4.4",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "yaml": "^2.6.1"
+  }
+}

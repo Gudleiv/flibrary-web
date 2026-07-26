@@ -1,0 +1,8 @@
+# Шелл-скрипты уезжают в Linux-образы (deploy/opds-entrypoint.sh — ENTRYPOINT контейнера).
+# На checkout под Windows с core.autocrlf=true они получали CRLF, и ядро не находило
+# интерпретатор: `exec /usr/local/bin/opds-entrypoint.sh: no such file or directory`,
+# потому что шебанг превращался в `#!/bin/sh\r`. Поэтому LF принудительно.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+Caddyfile text eol=lf

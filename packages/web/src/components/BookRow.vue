@@ -1,0 +1,70 @@
+<script setup lang="ts">
+import { computed } from 'vue';
+import Tag from 'primevue/tag';
+import type { BookListItem } from '@flibrary/contract';
+
+import { coverUrl } from '@/api/client';
+
+const props = defineProps<{ book: BookListItem }>();
+
+/**
+ * В коллекции попадаются книги без названия (в нашей — два десятка на 700 тысяч).
+ * Пустая строка в списке выглядит как сломанная вёрстка, поэтому показываем хотя бы
+ * идентификатор: по нему книгу можно найти и открыть.
+ */
+const title = computed(() => props.book.title?.trim() || `ID: ${props.book.bookId}`);
+
+// «Неизвестный автор» подставляет API: в коллекции это отдельная запись справочника
+// с английским именем, а не отсутствие данных.
+const authors = computed(
+  () => props.book.authors.map((author) => author.name).join(', ') || 'Неизвестный автор',
+);
+
+const seriesLabel = computed(() => {
+  const series = props.book.series;
+  if (!series) return null;
+  return props.book.seqNumber === null || props.book.seqNumber === undefined
+    ? series.title
+    : `${series.title} #${props.book.seqNumber}`;
+});
+
+const sizeLabel = computed(() =>
+  props.book.size === null || props.book.size === undefined
+    ? null
+    : `${Math.max(1, Math.round(props.book.size / 1024))} КБ`,
+);
+
+/** У книги может не быть обложки — тогда ручка отдаёт 404, и картинку прячем. */
+function hideBrokenCover(event: Event): void {
+  (event.target as HTMLImageElement).style.visibility = 'hidden';
+}
+</script>
+
+<template>
+  <div class="book-row">
+    <!-- Ленивая загрузка: на странице до сотни обложек, каждая — распаковка архива. -->
+    <img
+      class="book-cover"
+      :src="coverUrl(book.bookId, 'thumb')"
+      :alt="`Обложка: ${title}`"
+      loading="lazy"
+      decoding="async"
+      @error="hideBrokenCover"
+    />
+    <div class="stack" style="gap: 0.25rem; min-width: 0">
+      <!-- Ссылка не здесь, а на всей карточке (SearchView): кликабельным должен быть
+           весь блок, а вложенная ссылка внутри ссылки — невалидная разметка. -->
+      <span style="font-weight: 600">{{ title }}</span>
+      <span class="muted">{{ authors }}</span>
+      <div class="row" style="gap: 0.35rem">
+        <Tag v-if="seriesLabel" severity="secondary" :value="seriesLabel" />
+        <Tag v-if="book.year" severity="secondary" :value="String(book.year)" />
+        <Tag v-if="book.lang" severity="secondary" :value="book.lang" />
+        <Tag v-if="book.ext" severity="secondary" :value="book.ext" />
+        <Tag v-if="sizeLabel" severity="secondary" :value="sizeLabel" />
+        <Tag v-if="book.libRate" severity="info" :value="`★ ${book.libRate}`" />
+        <Tag v-if="book.favorite" severity="warn" value="избранное" />
+      </div>
+    </div>
+  </div>
+</template>

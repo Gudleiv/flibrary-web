@@ -1,0 +1,32 @@
+{
+  "name": "flibrary-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Веб-каталогизатор электронной библиотеки поверх коллекции FLibrary",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @flibrary/api --filter @flibrary/web dev",
+    "build": "pnpm --filter @flibrary/contract build && pnpm --filter @flibrary/api build && pnpm --filter @flibrary/web build",
+    "typecheck": "pnpm --filter @flibrary/contract build && pnpm -r --no-bail typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "fixtures": "pnpm --filter @flibrary/fixtures generate",
+    "fixtures:schema": "node scripts/sync-collection-schema.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-vue": "^9.32.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vue-eslint-parser": "^9.4.3"
+  }
+}

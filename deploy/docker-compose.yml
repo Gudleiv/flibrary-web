@@ -1,0 +1,91 @@
+# Продовая раскладка: Caddy (TLS + статика) → api (Node) → flibrary-opds (C++).
+#
+# Ключевое:
+#
+#  * C++-сервер не публикует портов наружу вообще. Он внутренний content-service, к нему
+#    обращается только api по внутренней сети compose.
+#  * Библиотека (collection.db и архивы) — один том `library`, смонтированный read-only во
+#    все сервисы. Локальный каталог по умолчанию; SMB-шара — оверрайдом:
+#    `docker compose -f docker-compose.yml -f docker-compose.smb.yml up -d`.
+#  * Ничего не нужно собирать на хосте: и api, и SPA собираются в образах.
+#
+# Переменные — в `.env` рядом с этим файлом, шаблон в `.env.example`.
+
+name: flibrary-web
+
+services:
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: '3000'
+      COLLECTION_DB: /library/${COLLECTION_FILE:-collection.db}
+      APP_DB: /var/lib/flibrary-web/app.db
+      CACHE_DIR: /var/cache/flibrary-web
+      CONTENT_SERVICE_URL: http://opds:12791
+      SESSION_SECRET: ${SESSION_SECRET:?задайте SESSION_SECRET, например openssl rand -hex 32}
+      COOKIE_SECURE: 'true'
+    volumes:
+      # Коллекция — только чтение: её схемой владеет FLibrary.
+      - library:/library:ro
+      - app-db:/var/lib/flibrary-web
+      - cover-cache:/var/cache/flibrary-web
+    depends_on:
+      - opds
+
+  # Внутренний content-service: обложки, файлы книг, конвертеры форматов.
+  # Образ собирается из официальной портативной сборки релиза, см. opds.Dockerfile.
+  opds:
+    build:
+      context: .
+      dockerfile: opds.Dockerfile
+      args:
+        FLIBRARY_VERSION: ${FLIBRARY_VERSION:-2.6.6}
+    restart: unless-stopped
+    # Портов наружу нет: доступен только по внутренней сети.
+    expose:
+      - '12791'
+    environment:
+      COLLECTION_NAME: ${COLLECTION_NAME:-collection}
+      COLLECTION_DB: /library/${COLLECTION_FILE:-collection.db}
+      ARCHIVES_DIR: /library/${ARCHIVES_SUBDIR:-archives}
+    volumes:
+      # Тоже read-only: /Images/* (обложки и файлы книг — всё, что мы проксируем) на
+      # read-only коллекции работают. Ценой отключается OPDS-каталог самого C++-сервера:
+      # ему нужно создать представление Books_View_Opds, то есть запись. Если нужен OPDS
+      # для читалок — смонтируйте `library:/library` без `:ro` (см. docs/deploy.md).
+      - library:/library:ro
+
+volumes:
+  # Библиотека FLibrary: collection.db + каталог с архивами книг.
+  library:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LIBRARY_PATH:?укажите LIBRARY_PATH — каталог с collection.db и архивами}
+  app-db:
+  cover-cache:
+  caddy-data:
+  caddy-config:

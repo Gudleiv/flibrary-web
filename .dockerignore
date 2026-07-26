@@ -1,0 +1,29 @@
+# Контекст сборки образов (deploy/*.Dockerfile) — это корень репозитория, поэтому без
+# исключений в него уехали бы node_modules и локальные данные: минуты на передачу и мусор
+# в слоях. Зависимости в образе всё равно ставятся заново под его платформу — better-sqlite3
+# нативный.
+node_modules
+**/node_modules
+
+# Локальная коллекция, app.db, кэш обложек, архивы фикстур.
+data
+
+# Собранное на хосте: в образе собирается своё.
+dist
+**/dist
+*.tsbuildinfo
+
+# Генерируется из openapi.yaml внутри образа.
+packages/contract/src/generated
+
+.git
+.github
+.claude
+coverage
+*.log
+.env
+.env.*
+deploy/.env
+docs
+README.md
+CLAUDE.md

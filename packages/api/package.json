@@ -1,0 +1,35 @@
+{
+  "name": "@flibrary/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fastify API: аутентификация, расширенный поиск, проксирование бинарных ручек в C++-сервер FLibrary",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "users": "tsx src/cli/users.ts",
+    "reindex": "tsx src/cli/reindex.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/rate-limit": "^10.2.2",
+    "@flibrary/contract": "workspace:*",
+    "@node-rs/argon2": "^2.0.2",
+    "ajv": "^8.17.1",
+    "better-sqlite3": "^11.7.0",
+    "fastify": "^5.2.0",
+    "fastify-plugin": "^6.0.0",
+    "undici": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

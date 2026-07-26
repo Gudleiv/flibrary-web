@@ -1,0 +1,27 @@
+# Замените на свой домен: Caddy сам получит сертификат Let's Encrypt.
+# Для локальной проверки годится `localhost`.
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	# API и health — на бэкенд.
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+	handle /health {
+		reverse_proxy api:3000
+	}
+
+	# Остальное — собранная SPA с history-fallback.
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		# Куку сессии и так httpOnly; это дополнительная защита фронта.
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}

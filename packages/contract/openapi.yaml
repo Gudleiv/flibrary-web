@@ -1,0 +1,695 @@
+openapi: 3.1.0
+info:
+  title: FLibrary Web API
+  version: 0.1.0
+  description: |
+    API веб-каталогизатора поверх коллекции FLibrary.
+
+    Коллекционная БД (`collection.db`) читается только на чтение — её схема принадлежит
+    FLibrary. Всё своё (пользователи, их данные, поисковые индексы) живёт в `app.db`.
+    Бинарные ручки (обложки, файлы книг) проксируются во внутренний C++-сервер `opds`.
+
+servers:
+  - url: /api/v1
+
+security:
+  - sessionCookie: []
+
+tags:
+  - name: auth
+  - name: search
+  - name: books
+  - name: catalog
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Вход по логину и паролю
+      description: При успехе ставит httpOnly-куку сессии. Регистрации нет — пользователей создаёт администратор.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [login, password]
+              properties:
+                login: { type: string, minLength: 1, maxLength: 64 }
+                password: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        '200':
+          description: Успешный вход
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Выход, сессия аннулируется
+      responses:
+        '204': { description: Сессия закрыта }
+
+  /me:
+    get:
+      tags: [auth]
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /search:
+    post:
+      tags: [search]
+      summary: Расширенный поиск книг
+      description: |
+        Тело запроса — дерево предикатов (см. `SearchQuery`). Метод POST выбран потому, что
+        запрос структурный и не влезает в query-строку; для шаринга ссылок клиент кодирует
+        то же дерево в URL сам.
+
+        Отдаёт только страницу выдачи. Счётчики фасетов и общее число совпадений — это
+        работа порядка «всё совпавшее множество», она не зависит от страницы и живёт в
+        отдельной операции `POST /search/facets`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchQuery' }
+      responses:
+        '200':
+          description: Страница результатов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /search/facets:
+    post:
+      tags: [search]
+      summary: Счётчики фасетов и общее число совпадений
+      description: |
+        Тело — тот же `SearchQuery`, но значимы в нём только `where` и `facets`: и счётчики,
+        и `total` считаются по всему совпавшему множеству, поэтому от сортировки, страницы
+        и размера страницы не зависят.
+
+        Отсюда способ пользоваться: запрашивать один раз на набор фильтров, а при листании
+        переспрашивать только `POST /search`. Ответ кэшируется на сервере (`QUERY_CACHE_TTL_SECONDS`),
+        так что повтор с теми же фильтрами дёшев, но лишний вызов на каждую страницу — это
+        снова полный проход по множеству.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchQuery' }
+      responses:
+        '200':
+          description: Счётчики по всему совпавшему множеству
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchFacets' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /search/suggest:
+    get:
+      tags: [search]
+      summary: Подсказки по авторам, сериям и ключевым словам
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: kind
+          in: query
+          schema:
+            enum: [author, series, keyword, title]
+            default: author
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Suggestion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /books/{bookId}:
+    get:
+      tags: [books]
+      summary: Карточка книги
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /books/{bookId}/cover:
+    get:
+      tags: [books]
+      summary: Обложка книги
+      description: Отдаётся из дискового кэша; при первом запросе извлекается из архива внутренним C++-сервером.
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+        - name: size
+          in: query
+          schema:
+            enum: [thumb, full]
+            default: thumb
+      responses:
+        '200':
+          description: Изображение обложки
+          headers:
+            ETag:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '304': { description: Не изменилось }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /books/{bookId}/content:
+    get:
+      tags: [books]
+      summary: Файл книги
+      description: Стримится из архива внутренним C++-сервером. Форматы кроме исходного требуют настроенных конвертеров.
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+        - name: format
+          in: query
+          schema:
+            enum: [original, fb2, zip, epub, mobi]
+            default: original
+      responses:
+        '200':
+          description: Файл книги
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+
+  /collection:
+    get:
+      tags: [catalog]
+      summary: Сведения об активной коллекции
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CollectionInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /genres:
+    get:
+      tags: [catalog]
+      summary: Дерево жанров
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Genre' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /languages:
+    get:
+      tags: [catalog]
+      summary: Языки коллекции с числом книг
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/LanguageCount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: flw_session
+
+  parameters:
+    BookId:
+      name: bookId
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Требуется аутентификация
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Не найдено
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Слишком много попыток
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    BadGateway:
+      description: Внутренний content-service недоступен
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    # --- Расширенный поиск -----------------------------------------------------
+    # OpenAPI 3.1 — это JSON Schema 2020-12, поэтому дерево предикатов описано здесь
+    # один раз и служит одновременно контрактом типов и рантайм-валидатором:
+    # standalone-схему для Ajv извлекает scripts/extract-search-schema.mjs.
+    #
+    # Defaults специально указаны только в описаниях: `default` в схеме заставил бы
+    # генератор считать поле обязательным для клиента.
+
+    SearchQuery:
+      description: 'Запрос расширенного поиска: дерево предикатов, сортировка, keyset-курсор и запрошенные фасеты.'
+      type: object
+      additionalProperties: false
+      required: [where]
+      properties:
+        where: { $ref: '#/components/schemas/SearchNode' }
+        sort:
+          description: 'По умолчанию: [{ field: relevance, dir: desc }].'
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/SortSpec' }
+        cursor:
+          description: Курсор keyset-пагинации из nextCursor предыдущего ответа.
+          type: [string, 'null']
+          maxLength: 512
+        offset:
+          description: >-
+            Сколько совпадений пропустить — для навигации по номерам страниц, куда курсором
+            не попасть. Дороже курсора: пропускаемые строки СУБД всё равно проходит, поэтому
+            для последовательного листания используйте cursor. По умолчанию 0.
+          type: integer
+          minimum: 0
+          maximum: 5000000
+        limit:
+          description: 'По умолчанию: 50.'
+          type: integer
+          minimum: 1
+          maximum: 200
+        facets:
+          description: >-
+            Какие фасеты посчитать. Значимо только для POST /search/facets; в POST /search
+            поле игнорируется. По умолчанию — никакие.
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/FacetField' }
+        withTotal:
+          description: >-
+            Считать общее число совпадений прямо в POST /search (по умолчанию false).
+            Это ещё один полный проход по совпавшему множеству ради одной цифры, поэтому
+            для интерфейса с номерами страниц берите total из POST /search/facets — там
+            он считается вместе со счётчиками и кэшируется. Включать имеет смысл, когда
+            нужен ровно один запрос и фасеты не нужны.
+          type: boolean
+
+    SearchNode:
+      description: 'Узел дерева: либо логическая группа, либо отрицание, либо предикат по полю.'
+      oneOf:
+        - $ref: '#/components/schemas/SearchGroup'
+        - $ref: '#/components/schemas/SearchNot'
+        - $ref: '#/components/schemas/SearchPredicate'
+
+    SearchGroup:
+      type: object
+      additionalProperties: false
+      required: [op, nodes]
+      properties:
+        op: { enum: [and, or] }
+        nodes:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: { $ref: '#/components/schemas/SearchNode' }
+
+    SearchNot:
+      type: object
+      additionalProperties: false
+      required: [op, node]
+      properties:
+        op: { const: not }
+        node: { $ref: '#/components/schemas/SearchNode' }
+
+    SearchPredicate:
+      description: Предикат по одному полю. Набор операторов зависит от типа поля.
+      oneOf:
+        - $ref: '#/components/schemas/TextPredicate'
+        - $ref: '#/components/schemas/TermPredicate'
+        - $ref: '#/components/schemas/NumberPredicate'
+        - $ref: '#/components/schemas/RangePredicate'
+        - $ref: '#/components/schemas/IdPredicate'
+        - $ref: '#/components/schemas/BoolPredicate'
+
+    TextPredicate:
+      type: object
+      additionalProperties: false
+      required: [field, op, value]
+      properties:
+        field: { $ref: '#/components/schemas/TextField' }
+        op:
+          description: match — FTS по словам; prefix — по началу слова; phrase — точная фраза; substring — подстрока (триграммный индекс).
+          enum: [match, prefix, phrase, substring]
+        value: { type: string, minLength: 1, maxLength: 512 }
+
+    TermPredicate:
+      description: 'Значения всегда списком: список из одного элемента — это равенство.'
+      type: object
+      additionalProperties: false
+      required: [field, op, values]
+      properties:
+        field: { $ref: '#/components/schemas/TermField' }
+        op: { const: in }
+        values:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: string, maxLength: 128 }
+        includeChildren:
+          description: Только для field=genre — включать дочерние жанры дерева.
+          type: boolean
+
+    NumberPredicate:
+      type: object
+      additionalProperties: false
+      required: [field, op, value]
+      properties:
+        field: { $ref: '#/components/schemas/NumberField' }
+        op: { enum: [eq, gte, lte, gt, lt] }
+        value: { type: number }
+
+    RangePredicate:
+      description: Хотя бы одна граница должна быть задана — это проверяет сервер.
+      type: object
+      additionalProperties: false
+      required: [field, op]
+      properties:
+        field: { $ref: '#/components/schemas/NumberField' }
+        op: { const: range }
+        from: { type: [number, 'null'] }
+        to: { type: [number, 'null'] }
+
+    IdPredicate:
+      description: 'Значения всегда списком: список из одного элемента — это равенство.'
+      type: object
+      additionalProperties: false
+      required: [field, op, values]
+      properties:
+        field: { $ref: '#/components/schemas/IdField' }
+        op: { const: in }
+        values:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { type: integer }
+
+    BoolPredicate:
+      type: object
+      additionalProperties: false
+      required: [field, op, value]
+      properties:
+        field: { $ref: '#/components/schemas/BoolField' }
+        op: { const: eq }
+        value: { type: boolean }
+
+    TextField:
+      description: any — сводный индекс по всем текстовым полям.
+      enum: [any, title, author, series, annotation, keyword]
+
+    TermField:
+      enum: [lang, ext, genre, archive]
+
+    NumberField:
+      enum: [year, libRate, userRate, size, seqNumber]
+
+    IdField:
+      enum: [authorId, seriesId, keywordId, groupId]
+
+    BoolField:
+      enum: [favorite, read, hasCover, hasAnnotation, hasReview, deleted]
+
+    FacetField:
+      enum: [lang, ext, genre, year, libRate, author, series]
+
+    SortSpec:
+      type: object
+      additionalProperties: false
+      required: [field]
+      properties:
+        field:
+          enum:
+            [relevance, title, author, series, seqNumber, year, libRate, userRate, size, addedAt]
+        dir:
+          description: 'По умолчанию: asc.'
+          enum: [asc, desc]
+
+    # --- Общее -----------------------------------------------------------------
+    Problem:
+      description: Ошибка в формате RFC 9457.
+      type: object
+      required: [title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              message: { type: string }
+
+    User:
+      type: object
+      required: [login, displayName]
+      properties:
+        login: { type: string }
+        displayName: { type: string }
+
+    SearchResult:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/BookListItem' }
+        nextCursor:
+          type: [string, 'null']
+          description: Курсор следующей страницы; null — страниц больше нет.
+        total:
+          type: [integer, 'null']
+          description: >-
+            Общее число совпадений — только если запрошено withTotal, иначе null.
+            Обычный способ его получить — POST /search/facets: там оно не зависит от
+            страницы и кэшируется.
+        tookMs: { type: integer }
+
+    SearchFacets:
+      description: Счётчики и общее число совпадений по всему множеству — ответ POST /search/facets.
+      type: object
+      required: [facets, total]
+      properties:
+        total:
+          type: integer
+          description: Общее число совпадений по фильтру целиком.
+        facets:
+          type: array
+          items: { $ref: '#/components/schemas/Facet' }
+        tookMs: { type: integer }
+
+    BookListItem:
+      type: object
+      required: [bookId, title, authors, hasCover]
+      properties:
+        bookId: { type: integer }
+        title: { type: string }
+        authors:
+          type: array
+          items: { $ref: '#/components/schemas/AuthorRef' }
+        series: { $ref: '#/components/schemas/SeriesRef' }
+        seqNumber: { type: [integer, 'null'] }
+        year: { type: [integer, 'null'] }
+        lang: { type: [string, 'null'] }
+        ext: { type: [string, 'null'] }
+        size: { type: [integer, 'null'] }
+        libRate: { type: [integer, 'null'] }
+        userRate: { type: [integer, 'null'] }
+        genres:
+          type: array
+          items: { $ref: '#/components/schemas/GenreRef' }
+        hasCover: { type: boolean }
+        favorite: { type: boolean }
+        read: { type: boolean }
+
+    BookDetail:
+      allOf:
+        - $ref: '#/components/schemas/BookListItem'
+        - type: object
+          properties:
+            annotation: { type: [string, 'null'] }
+            keywords:
+              type: array
+              items: { type: string }
+            archive: { type: [string, 'null'] }
+            fileName: { type: [string, 'null'] }
+            updateDate: { type: [string, 'null'] }
+            formats:
+              description: Форматы, в которых книгу можно скачать.
+              type: array
+              items: { type: string }
+            seriesBooks:
+              description: Соседние книги серии для навигации.
+              type: array
+              items: { $ref: '#/components/schemas/BookListItem' }
+
+    AuthorRef:
+      type: object
+      required: [authorId, name]
+      properties:
+        authorId: { type: integer }
+        name: { type: string }
+        lastName: { type: [string, 'null'] }
+        firstName: { type: [string, 'null'] }
+        middleName: { type: [string, 'null'] }
+
+    SeriesRef:
+      type: [object, 'null']
+      required: [seriesId, title]
+      properties:
+        seriesId: { type: integer }
+        title: { type: string }
+
+    GenreRef:
+      type: object
+      required: [code, title]
+      properties:
+        code: { type: string }
+        title: { type: string }
+
+    Genre:
+      type: object
+      required: [code, title]
+      properties:
+        code: { type: string }
+        parentCode: { type: [string, 'null'] }
+        title: { type: string }
+        books: { type: integer }
+        children:
+          type: array
+          items: { $ref: '#/components/schemas/Genre' }
+
+    LanguageCount:
+      type: object
+      required: [code, books]
+      properties:
+        code: { type: string }
+        books: { type: integer }
+
+    Facet:
+      type: object
+      required: [field, values]
+      properties:
+        field: { type: string }
+        values:
+          type: array
+          items: { $ref: '#/components/schemas/FacetValue' }
+        truncated:
+          type: boolean
+          description: true — значений больше, чем отдано (отдаётся топ-N).
+
+    FacetValue:
+      type: object
+      required: [value, count]
+      properties:
+        value: { type: string }
+        label: { type: string }
+        count: { type: integer }
+
+    Suggestion:
+      type: object
+      required: [kind, label]
+      properties:
+        kind: { enum: [author, series, keyword, title] }
+        id: { type: [integer, 'null'] }
+        label: { type: string }
+        books: { type: [integer, 'null'] }
+
+    CollectionInfo:
+      type: object
+      required: [name, books]
+      properties:
+        name: { type: string }
+        books: { type: integer }
+        authors: { type: integer }
+        series: { type: integer }
+        languages:
+          type: array
+          items: { type: string }
+        indexedAt:
+          type: [string, 'null']
+          format: date-time
+          description: Когда последний раз пересобирался поисковый индекс.
