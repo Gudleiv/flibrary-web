@@ -85,3 +85,54 @@ export const coverUrl = (bookId: number, size: 'thumb' | 'full' = 'thumb'): stri
 
 export const downloadUrl = (bookId: number, format = 'original'): string =>
   `/api/v1/books/${bookId}/content?format=${format}`;
+
+/**
+ * Скачивание через fetch, а не обычной ссылкой.
+ *
+ * По ссылке браузер уходит на URL ручки, и при ошибке (content-service занят или
+ * недоступен) пользователь видит problem+json как страницу вместо сообщения. Файл книги
+ * невелик, так что цена буфера в памяти — внятная ошибка и возможность её показать.
+ */
+export async function downloadBook(bookId: number, format: string): Promise<void> {
+  const response = await fetch(downloadUrl(bookId, format), { credentials: 'same-origin' });
+
+  if (!response.ok) {
+    const problem = (await response.json().catch(() => null)) as {
+      title?: string;
+      detail?: string;
+    } | null;
+    throw new ApiError(
+      problem?.detail ?? problem?.title ?? `Не удалось скачать файл (${response.status})`,
+      response.status,
+    );
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download =
+    fileNameFromDisposition(response.headers.get('content-disposition')) ??
+    `book-${bookId}.${format}`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Сразу отзывать нельзя: часть браузеров не успевает начать сохранение.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+}
+
+/** `filename*` (RFC 5987) важнее: имена книг обычно кириллические. */
+function fileNameFromDisposition(header: string | null): string | null {
+  if (header === null) return null;
+
+  const extended = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (extended?.[1] !== undefined) {
+    try {
+      return decodeURIComponent(extended[1].trim());
+    } catch {
+      // Битую кодировку игнорируем и пробуем обычный filename.
+    }
+  }
+
+  return /filename\s*=\s*"?([^";]+)"?/i.exec(header)?.[1]?.trim() ?? null;
+}

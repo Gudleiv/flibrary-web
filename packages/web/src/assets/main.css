@@ -71,6 +71,23 @@ body {
   height: 280px;
 }
 
+/* Заглушка вместо обложки: место занимает столько же, иначе вёрстка «прыгает». */
+.book-cover--empty {
+  display: grid;
+  place-items: center;
+  color: var(--p-text-muted-color);
+  background: var(--p-surface-100);
+  border: 1px dashed var(--p-surface-300);
+}
+
+.book-cover--empty .pi {
+  font-size: 1rem;
+}
+
+.book-cover--large.book-cover--empty .pi {
+  font-size: 2.5rem;
+}
+
 /* Карточка книги в выдаче — целиком ссылка, поэтому текст в ней остаётся обычным. */
 .book-card {
   display: block;

@@ -6,7 +6,12 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import { COLLECTION as C } from '../db/index.js';
-import { ContentServiceUnavailableError, type BookFormat } from '../content/opds.js';
+import {
+  ContentServiceBusyError,
+  ContentServiceTimeoutError,
+  ContentServiceUnavailableError,
+  type BookFormat,
+} from '../content/opds.js';
 import type { CoverSize } from '../cache/covers.js';
 import { mapBookRow, type BookRow } from './mappers.js';
 import { loadAuthors, loadGenres, loadKeywords } from './relations.js';
@@ -123,19 +128,18 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         response = await content.cover(bookId);
       } catch (error) {
-        if (error instanceof ContentServiceUnavailableError) {
-          return reply.status(502).type('application/problem+json').send({
-            title: 'Content-service недоступен',
-            status: 502,
-            detail: 'Не удалось получить обложку от внутреннего сервера FLibrary',
-          });
-        }
-        throw error;
+        return sendContentProblem(reply, error, 'Не удалось получить обложку');
       }
 
-      if (response.status !== 200) {
-        await covers.putMissing(bookId, size);
-        return sendNoCover(reply);
+      if (!response.ok) {
+        // Отрицательный результат кэшируем только тогда, когда он про книгу, а не про
+        // сервер: маркер `.missing` не протухает, и на 5xx мы спрятали бы обложку
+        // навсегда — до ручной чистки кэша.
+        if (response.status === 404) {
+          await covers.putMissing(bookId, size);
+          return sendNoCover(reply);
+        }
+        return sendUpstreamProblem(reply, response.status, 'Не удалось получить обложку');
       }
 
       const chunks: Buffer[] = [];
@@ -175,8 +179,10 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
       const format = request.query.format ?? 'original';
 
       const exists = db.read
-        .prepare(`SELECT IsDeleted AS isDeleted FROM ${C}.Books_View WHERE BookID = ?`)
-        .get(bookId) as { isDeleted: number } | undefined;
+        .prepare(
+          `SELECT IsDeleted AS isDeleted, FileName AS fileName FROM ${C}.Books_View WHERE BookID = ?`,
+        )
+        .get(bookId) as { isDeleted: number; fileName: string | null } | undefined;
 
       if (exists === undefined || (config.hideDeleted && exists.isDeleted === 1)) {
         return reply
@@ -185,36 +191,35 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
           .send({ title: 'Книга не найдена', status: 404 });
       }
 
+      let response;
       try {
-        const response = await content.book(bookId, format);
-        if (response.status !== 200) {
-          return reply
-            .status(502)
-            .type('application/problem+json')
-            .send({
-              title: 'Не удалось получить файл книги',
-              status: 502,
-              detail: `Content-service ответил ${response.status}`,
-            });
-        }
-
-        // Стримим как есть: книга может быть большой, буферизовать её незачем.
-        for (const header of ['content-type', 'content-length'] as const) {
-          const value = response.headers[header];
-          if (value !== undefined) reply.header(header, value);
-        }
-        const disposition = normalizeDisposition(response.headers['content-disposition'], bookId);
-        if (disposition !== undefined) reply.header('content-disposition', disposition);
-        return reply.send(response.body);
+        response = await content.book(bookId, format);
       } catch (error) {
-        if (error instanceof ContentServiceUnavailableError) {
-          return reply.status(502).type('application/problem+json').send({
-            title: 'Content-service недоступен',
-            status: 502,
-          });
-        }
-        throw error;
+        return sendContentProblem(reply, error, 'Не удалось получить файл книги');
       }
+
+      if (!response.ok) {
+        // 404 от content-service — это не «нет книги в каталоге», а «нет файла в архиве»:
+        // карточка при этом открывается, поэтому и статус разный.
+        return sendUpstreamProblem(reply, response.status, 'Не удалось получить файл книги');
+      }
+
+      // Стримим как есть: книга может быть большой, буферизовать её незачем.
+      // content-encoding пробрасываем вместе с длиной: расходиться им нельзя.
+      for (const header of ['content-type', 'content-length', 'content-encoding'] as const) {
+        const value = response.headers[header];
+        if (value !== undefined) reply.header(header, value);
+      }
+
+      // Без content-disposition браузер сохранил бы файл под именем последнего сегмента
+      // пути, то есть «content»; имя из коллекции честнее.
+      reply.header(
+        'content-disposition',
+        normalizeDisposition(response.headers['content-disposition'], bookId) ??
+          contentDisposition(exists.fileName, bookId, format),
+      );
+
+      return reply.send(response.body);
     },
   );
 };
@@ -257,6 +262,73 @@ function encodeRfc5987(value: string): string {
     /['()*]/g,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
+}
+
+/** Ошибка обращения к content-service → problem+json с честным статусом. */
+function sendContentProblem(reply: FastifyReply, error: unknown, title: string): FastifyReply {
+  if (error instanceof ContentServiceTimeoutError) {
+    return reply
+      .status(504)
+      .type('application/problem+json')
+      .send({
+        title,
+        status: 504,
+        detail:
+          'Внутренний сервер FLibrary не ответил вовремя. Обычно это значит, что он занят ' +
+          'распаковкой других книг, — попробуйте ещё раз.',
+      });
+  }
+
+  if (error instanceof ContentServiceBusyError) {
+    return reply.status(503).type('application/problem+json').header('retry-after', '5').send({
+      title,
+      status: 503,
+      detail: 'Внутренний сервер FLibrary перегружен, запрос не поставлен в очередь.',
+    });
+  }
+
+  if (error instanceof ContentServiceUnavailableError) {
+    return reply.status(502).type('application/problem+json').send({
+      title,
+      status: 502,
+      detail: 'Внутренний сервер FLibrary недоступен.',
+    });
+  }
+
+  throw error;
+}
+
+/** Неуспешный ответ самого content-service. */
+function sendUpstreamProblem(reply: FastifyReply, status: number, title: string): FastifyReply {
+  const mapped = status === 404 ? 404 : 502;
+  return reply
+    .status(mapped)
+    .type('application/problem+json')
+    .send({ title, status: mapped, detail: `Внутренний сервер FLibrary ответил ${status}` });
+}
+
+/**
+ * Имя файла для скачивания. Кириллица в именах книг обычна, поэтому кроме ASCII-запасного
+ * варианта отдаём RFC 5987 (`filename*`) — по нему браузер и сохранит.
+ */
+export function contentDisposition(
+  fileName: string | null,
+  bookId: number,
+  format: BookFormat,
+): string {
+  const base = (fileName ?? `book-${bookId}`).replace(/[\\/]/g, '_');
+  const withoutExt = base.replace(/\.[^.]+$/, '') || `book-${bookId}`;
+
+  const name =
+    format === 'zip'
+      ? `${withoutExt}.zip`
+      : format === 'epub' || format === 'mobi'
+        ? `${withoutExt}.${format}`
+        : base;
+
+  // Кавычки и управляющие символы в ASCII-варианте сломали бы заголовок.
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeRfc5987(name)}`;
 }
 
 function sendCover(
