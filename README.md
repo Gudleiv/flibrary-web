@@ -94,7 +94,7 @@ packages/
     src/indexer/  свой поисковый индекс: морфология, релевантность, подстроки
   web/        SPA: Vue 3 + TS + PrimeVue 4 + Pinia + TanStack Query
 fixtures/     генератор синтетической коллекции по схеме FLibrary
-deploy/       docker-compose (+ оверрейд для SMB), Caddyfile, Dockerfile для api, web и opds
+deploy/       docker-compose, Caddyfile, Dockerfile для api, web и opds
 docs/         архитектура и решения
 ```
 
@@ -222,7 +222,11 @@ docs/         архитектура и решения
 
 ## Деплой
 
-На хосте нужны только Docker и Compose v2: и API, и SPA, и C++-сервер собираются в образах.
+Одна Linux-машина с Docker и Compose v2 — больше на хосте ничего не нужно: и API, и SPA, и
+C++-сервер собираются в образах. Библиотека (`collection.db` и архивы) лежит на дисках этой
+же машины и монтируется read-only; `app.db`, кэш обложек и сертификаты Caddy — в именованных
+томах там же. Сетевых хранилищ раскладка не поддерживает намеренно (`docs/decisions.md`,
+решение 12).
 
 ```bash
 cd deploy
@@ -231,12 +235,6 @@ docker compose up -d --build
 
 docker compose exec api node dist/cli/users.js add user 'пароль'
 docker compose exec api node dist/cli/reindex.js
-```
-
-Библиотека на SMB-шаре — оверрейдом, подменяющим том `library`:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.smb.yml up -d --build
 ```
 
 C++-сервер берётся из официальной портативной сборки релиза

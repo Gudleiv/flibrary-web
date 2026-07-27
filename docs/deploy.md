@@ -1,7 +1,9 @@
 # Деплой
 
-Всё живёт в `docker compose`: на хосте нужны только Docker и Compose v2 — ни Node, ни pnpm,
-ни Qt. Библиотека (коллекция и архивы) подключается либо каталогом с хоста, либо SMB-шарой.
+Всё живёт в `docker compose` на одной Linux-машине: на хосте нужны только Docker и
+Compose v2 — ни Node, ни pnpm, ни Qt. Библиотека (коллекция и архивы) — каталог на дисках
+этой же машины; сетевых хранилищ раскладка не поддерживает намеренно (почему — в
+[decisions.md](decisions.md), решение 12).
 
 ```
 браузер → caddy  (TLS + собранная SPA)
@@ -48,52 +50,36 @@ docker compose exec api node dist/cli/reindex.js
 
 `docker compose logs -f api opds` — если что-то не поднялось.
 
-## Библиотека на SMB-шаре
+## Где что лежит на хосте
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.smb.yml up -d --build
-```
+| Что                                          | Где на машине                                      | Как подключено            |
+| -------------------------------------------- | -------------------------------------------------- | ------------------------- |
+| `collection.db` + архивы книг                | `LIBRARY_PATH` из `.env` (например `/srv/library`) | bind-mount `/library:ro`  |
+| `app.db` (пользователи, сессии, свои данные) | том `flibrary-web_app-db`                          | `/var/lib/flibrary-web`   |
+| кэш обложек                                  | том `flibrary-web_cover-cache`                     | `/var/cache/flibrary-web` |
+| сертификаты и конфиг Caddy                   | тома `flibrary-web_caddy-data`, `…_caddy-config`   | `/data`, `/config`        |
 
-Оверрейд подменяет только том `library`, для сервисов ничего не меняется. Переменные
-(`SMB_HOST`, `SMB_SHARE`, `SMB_PATH`, `SMB_USER`, `SMB_PASSWORD`, `SMB_VERS`) — в `.env`.
+Именованные тома Docker — это каталоги в `/var/lib/docker/volumes/<имя>/_data` на той же
+машине; ничего сетевого в раскладке нет.
 
-Что нужно знать:
-
-- **cifs-utils ставится на хост.** Шару монтирует демон Docker, а не контейнер:
-  `apt install cifs-utils`, модуль ядра `cifs` должен грузиться (`modprobe cifs`).
-  Контейнерам не нужны ни привилегии, ни `CAP_SYS_ADMIN`.
-- **`nobrl` обязателен.** SQLite берёт fcntl-блокировки даже на чтение, через CIFS они
-  превращаются в серверные byte-range locks: в лучшем случае тормоза, в худшем —
-  `SQLITE_BUSY`/`SQLITE_IOERR`. Том смонтирован `ro`, писателей нет, блокировки не нужны.
-- **`vers` задаём явно.** Автонеговорка с частью NAS выбирает SMB1.
-- **Пароль в `.env`** — это файл на диске, `chmod 600`. Альтернатива: файл с credentials на
-  хосте (две строки `username=`/`password=`, `chmod 600`) и `credentials=/путь` вместо пары
-  `username=,password=` в строке `o:` — читает его демон Docker, поэтому путь хостовый.
-- **Прав на запись не нужно.** `ro` достаточно: `/Images/*` (обложки и файлы книг) на
-  read-only коллекции работают.
-
-Проверить, что шара смонтировалась:
+`LIBRARY_PATH` монтируется длинным синтаксисом с `create_host_path: false`: при опечатке в
+пути compose не создаст пустой каталог от root, а откажется поднимать сервис. Проверить,
+что коллекция на месте:
 
 ```bash
 docker compose exec api ls -la /library
 ```
 
-### Если поиск по шаре тормозит
-
-Поиск делает много случайных чтений `collection.db`, а SMB на таких чтениях медленный.
-Лечится тем, что на шаре остаются только архивы, а коллекция копируется на локальный том:
+Прав на запись библиотеке не нужно: `/Images/*` (обложки и файлы книг) на read-only
+коллекции работают. Бэкапить стоит `app.db` — всё остальное восстанавливается пересборкой
+и переиндексацией:
 
 ```bash
-docker volume create flibrary-web_collection
-docker run --rm \
-    -v flibrary-web_library:/library:ro \
-    -v flibrary-web_collection:/collection \
-    alpine cp /library/collection.db /collection/collection.db
+docker compose stop api
+docker run --rm -v flibrary-web_app-db:/data:ro -v "$PWD":/backup \
+    alpine tar czf /backup/app-db.tar.gz -C /data .
+docker compose start api
 ```
-
-и в `docker-compose.yml` у `api` и `opds` добавить том `collection:/collection:ro`, а
-`COLLECTION_DB` указать на `/collection/collection.db`. Копию нужно обновлять после каждого
-обновления коллекции — иначе будут находиться книги, которых в архивах уже нет.
 
 ## Проверка
 
@@ -165,8 +151,8 @@ docker compose exec api node dist/cli/reindex.js
   представление `Books_View_Opds`, то есть пишет в коллекцию. Если файл только для чтения,
   обложки и файлы книг всё равно отдаются (проверено), а `/opds`, `/web` и `/main/getBooks/*`
   отдают пустоту. Нам этого достаточно — мы проксируем только `/Images/*`. Если нужен
-  OPDS-каталог для читалок, смонтируйте `library:/library` без `:ro` **и** оставьте
-  автообновление коллекции выключенным.
+  OPDS-каталог для читалок, уберите `read_only: true` у тома `/library` в сервисе `opds`
+  **и** оставьте автообновление коллекции выключенным.
 - **Падает по segfault, если клиент обрывает соединение** на середине выдачи: 30 оборванных
   запросов к `/Images/covers/*` напрямую роняют процесс (`segfault ... in liblogic.so`).
   Через `api` это не воспроизводится — обложки он вычитывает целиком, — но `restart:

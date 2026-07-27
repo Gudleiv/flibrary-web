@@ -96,9 +96,9 @@ export function openDatabase(config: Config, log: Logger): DbHandle {
  * temp_store — ради фасетов: они материализуют совпавшее множество во временную
  * таблицу (см. search/runFacets.ts), а по умолчанию SQLite кладёт её на диск.
  *
- * mmap_size сознательно не трогаем: выигрыш он даёт на локальном томе, а коллекция
- * в проде обычно лежит на SMB-шаре, где случайные чтения и так больное место
- * (см. docs/deploy.md).
+ * mmap_size не трогаем: коллекция в проде лежит на локальном диске, так что выигрыш он
+ * дать может, — но это правка по замерам на настоящей коллекции, а не вслепую
+ * (см. docs/architecture.md, 13.3).
  */
 function tuneReadConnection(read: Db): void {
   const CACHE_KIB = 64 * 1024;

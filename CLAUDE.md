@@ -40,7 +40,7 @@ packages/
     src/content/  клиент C++-сервера — единственное место, знающее его контракт
   web/        Vue 3 + TS + PrimeVue 4 + Pinia + TanStack Query
 fixtures/     генератор синтетической коллекции по схеме FLibrary
-deploy/       docker-compose (+ SMB-оверрейд), Caddyfile, Dockerfile api/web/opds
+deploy/       docker-compose, Caddyfile, Dockerfile api/web/opds
 ```
 
 ## Команды
