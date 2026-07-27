@@ -75,7 +75,8 @@ export async function buildServer(config: Config): Promise<FastifyInstance> {
   fastify.decorate('config', config);
   fastify.decorate('db', db);
   fastify.decorate('searchIndex', searchIndex);
-  fastify.decorate('content', new ContentService(config, fastify.log));
+  const content = new ContentService(config, fastify.log);
+  fastify.decorate('content', content);
   fastify.decorate('covers', new CoverCache(config, fastify.log));
   fastify.decorate(
     'queries',
@@ -87,6 +88,8 @@ export async function buildServer(config: Config): Promise<FastifyInstance> {
   );
 
   fastify.addHook('onClose', async () => {
+    // Пул соединений с content-service держит процесс живым, пока его не закрыть.
+    await content.close();
     db.close();
   });
 

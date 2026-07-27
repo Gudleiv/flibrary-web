@@ -3,7 +3,7 @@ import { computed } from 'vue';
 import Tag from 'primevue/tag';
 import type { BookListItem } from '@flibrary/contract';
 
-import { coverUrl } from '@/api/client';
+import BookCover from '@/components/BookCover.vue';
 
 const props = defineProps<{ book: BookListItem }>();
 
@@ -33,24 +33,12 @@ const sizeLabel = computed(() =>
     ? null
     : `${Math.max(1, Math.round(props.book.size / 1024))} КБ`,
 );
-
-/** У книги может не быть обложки — тогда ручка отдаёт 404, и картинку прячем. */
-function hideBrokenCover(event: Event): void {
-  (event.target as HTMLImageElement).style.visibility = 'hidden';
-}
 </script>
 
 <template>
   <div class="book-row">
     <!-- Ленивая загрузка: на странице до сотни обложек, каждая — распаковка архива. -->
-    <img
-      class="book-cover"
-      :src="coverUrl(book.bookId, 'thumb')"
-      :alt="`Обложка: ${title}`"
-      loading="lazy"
-      decoding="async"
-      @error="hideBrokenCover"
-    />
+    <BookCover :book-id="book.bookId" :title="title" />
     <div class="stack" style="gap: 0.25rem; min-width: 0">
       <!-- Ссылка не здесь, а на всей карточке (SearchView): кликабельным должен быть
            весь блок, а вложенная ссылка внутри ссылки — невалидная разметка. -->

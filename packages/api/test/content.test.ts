@@ -11,12 +11,15 @@ import { createServer, type Server } from 'node:http';
 import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
 import { loadConfig, type Config } from '../src/config.js';
 import { buildServer } from '../src/server.js';
 import { createUser } from '../src/auth/users.js';
+import { ContentLimiter, ContentServiceBusyError } from '../src/content/opds.js';
+import { detectImageType } from '../src/cache/covers.js';
+import { contentDisposition } from '../src/routes/books.js';
 
 const collectionDb = join(import.meta.dirname, '../../../data/collection.db');
 const describeIfFixtures = existsSync(collectionDb) ? describe : describe.skip;
@@ -199,6 +202,281 @@ describeIfFixtures('бинарные ручки поверх content-service', (
 
     expect(response.statusCode).toBe(502);
     expect(response.headers['content-type']).toContain('application/problem+json');
-    expect(response.json().title).toContain('Content-service');
+    expect(response.json().title).toContain('Не удалось получить файл книги');
+    expect(response.json().detail).toContain('недоступен');
+  });
+});
+
+// Поведение под нагрузкой. Ключевая особенность настоящего C++-сервера: обработчики
+// выполняются в пуле фиксированного размера, и всё, что в него не поместилось, стоит в
+// очереди без ответа. Именно на этом ломалась страница книги — сетка обложек забивала
+// пул, а скачивание уходило в таймаут.
+
+/** Поддельный `opds`: пул на N обработчиков, всё сверх него ждёт в очереди. */
+class FakeOpds {
+  readonly requests: string[] = [];
+  /** Пик числа принятых, но ещё не отвеченных запросов — глубина его очереди. */
+  maxInFlight = 0;
+  /** Что отвечать: подменяется в тестах про ошибки. */
+  handler: (path: string) => { status: number; body: Buffer; type: string } = () => ({
+    status: 200,
+    body: JPEG,
+    type: 'image/jpeg',
+  });
+
+  private readonly server: Server;
+  private active = 0;
+  private inFlight = 0;
+  private readonly queue: (() => void)[] = [];
+
+  constructor(
+    private readonly poolSize: number,
+    private readonly delayMs: number,
+  ) {
+    this.server = createServer((request, response) => {
+      const path = request.url ?? '';
+      this.requests.push(path);
+      this.inFlight += 1;
+      this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+      this.run(() => {
+        const { status, body, type } = this.handler(path);
+        response.writeHead(status, {
+          'content-type': type,
+          'content-length': String(body.length),
+        });
+        response.end(body);
+        this.inFlight -= 1;
+      });
+    });
+  }
+
+  async listen(): Promise<string> {
+    await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
+    const address = this.server.address();
+    if (address === null || typeof address === 'string') throw new Error('нет адреса');
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  async close(): Promise<void> {
+    await new Promise<void>((resolve) => this.server.close(() => resolve()));
+  }
+
+  reset(): void {
+    this.requests.length = 0;
+    this.maxInFlight = 0;
+  }
+
+  private run(task: () => void): void {
+    if (this.active >= this.poolSize) {
+      this.queue.push(() => this.run(task));
+      return;
+    }
+
+    this.active += 1;
+    setTimeout(() => {
+      task();
+      this.active -= 1;
+      this.queue.shift()?.();
+    }, this.delayMs).unref();
+  }
+}
+
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+const JPEG = Buffer.from('ffd8ffe000104a46494600010100000100010000', 'hex');
+
+describe('ContentLimiter', () => {
+  it('не пускает в полёт больше разрешённого', async () => {
+    const limiter = new ContentLimiter(2);
+    const first = await limiter.acquire('cover', 1000);
+    const second = await limiter.acquire('file', 1000);
+    expect(limiter.busy).toBe(2);
+
+    let third = false;
+    void limiter.acquire('cover', 1000).then(
+      () => (third = true),
+      () => undefined,
+    );
+    await Promise.resolve();
+    expect(third).toBe(false);
+
+    first();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(third).toBe(true);
+    second();
+  });
+
+  it('держит слот под файл: скачивание не ждёт за обложками', async () => {
+    const limiter = new ContentLimiter(3);
+    // Обложек одновременно не больше limit - 1.
+    await limiter.acquire('cover', 1000);
+    await limiter.acquire('cover', 1000);
+    expect(limiter.busy).toBe(2);
+
+    let coverGranted = false;
+    void limiter.acquire('cover', 1000).then(
+      () => (coverGranted = true),
+      () => undefined,
+    );
+    const file = await limiter.acquire('file', 1000);
+    expect(file).toBeTypeOf('function');
+    expect(coverGranted).toBe(false);
+  });
+
+  it('не ждёт вечно: очередь ограничена по времени', async () => {
+    const limiter = new ContentLimiter(1);
+    await limiter.acquire('file', 1000);
+    await expect(limiter.acquire('file', 20)).rejects.toBeInstanceOf(ContentServiceBusyError);
+  });
+});
+
+describe('detectImageType', () => {
+  it('узнаёт формат по сигнатуре, а не по слову content-service', () => {
+    expect(detectImageType(PNG)).toBe('image/png');
+    expect(detectImageType(JPEG)).toBe('image/jpeg');
+    expect(detectImageType(Buffer.from('не картинка'))).toBeNull();
+  });
+});
+
+describe('contentDisposition', () => {
+  it('меняет расширение под формат', () => {
+    expect(contentDisposition('book.fb2', 1, 'zip')).toContain('filename="book.zip"');
+    expect(contentDisposition('book.fb2', 1, 'original')).toContain('filename="book.fb2"');
+    expect(contentDisposition('book.fb2', 1, 'epub')).toContain('filename="book.epub"');
+  });
+
+  it('кириллицу отдаёт по RFC 5987, оставляя ASCII-запасной вариант', () => {
+    const header = contentDisposition('Тихий берег.fb2', 1, 'original');
+    expect(header).toContain("filename*=UTF-8''%D0%A2%D0%B8%D1%85%D0%B8%D0%B9");
+    expect(header).toMatch(/filename="_+ _+\.fb2"/);
+  });
+
+  it('переживает отсутствие имени в коллекции', () => {
+    expect(contentDisposition(null, 42, 'zip')).toContain('filename="book-42.zip"');
+  });
+});
+
+describeIfFixtures('обложки и файлы под нагрузкой', () => {
+  let fastify: FastifyInstance;
+  let cookie: string;
+  let appDb: string;
+  let cacheDir: string;
+  let bookId: number;
+  const opds = new FakeOpds(2, 40);
+
+  beforeAll(async () => {
+    const url = await opds.listen();
+    appDb = join(tmpdir(), `flw-content-load-${process.pid}.db`);
+    cacheDir = join(tmpdir(), `flw-content-load-cache-${process.pid}`);
+    rmSync(appDb, { force: true });
+    rmSync(cacheDir, { force: true, recursive: true });
+
+    Object.assign(process.env, {
+      COLLECTION_DB: collectionDb,
+      APP_DB: appDb,
+      CACHE_DIR: cacheDir,
+      CONTENT_SERVICE_URL: url,
+      // Ровно столько же, сколько у поддельного сервера: обложкам достаётся один слот,
+      // второй зарезервирован под файл.
+      CONTENT_SERVICE_CONCURRENCY: '2',
+      SESSION_SECRET: 'test-secret',
+      LOG_LEVEL: 'silent',
+    });
+
+    fastify = await buildServer(loadConfig());
+    await createUser(fastify.db.write, 'tester', 'password123', 'Тестер');
+    const login = await fastify.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { login: 'tester', password: 'password123' },
+    });
+    cookie = login.headers['set-cookie'] as string;
+    bookId = (
+      fastify.db.read.prepare('SELECT min(BookID) AS id FROM coll.Books').get() as { id: number }
+    ).id;
+  });
+
+  afterAll(async () => {
+    await fastify.close();
+    await opds.close();
+    rmSync(appDb, { force: true });
+    rmSync(cacheDir, { force: true, recursive: true });
+  });
+
+  afterEach(() => {
+    opds.reset();
+    opds.handler = () => ({ status: 200, body: JPEG, type: 'image/jpeg' });
+  });
+
+  const cover = (id: number, size = 'thumb') =>
+    fastify.inject({
+      method: 'GET',
+      url: `/api/v1/books/${id}/cover?size=${size}`,
+      headers: { cookie },
+    });
+
+  it('тип обложки — по содержимому, а не по слову content-service', async () => {
+    // FLibrary всегда проставляет image/jpeg; при nosniff PNG под этим типом не покажется.
+    opds.handler = () => ({ status: 200, body: PNG, type: 'image/jpeg' });
+
+    const response = await cover(10, 'full');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('image/png');
+  });
+
+  it('не запоминает «обложки нет» после ошибки сервера', async () => {
+    opds.handler = () => ({ status: 500, body: Buffer.from('oops'), type: 'text/plain' });
+    expect((await cover(11)).statusCode).toBe(502);
+
+    // Сервер починился — обложка обязана появиться, а не остаться навсегда «отсутствующей».
+    opds.handler = () => ({ status: 200, body: JPEG, type: 'image/jpeg' });
+    expect((await cover(11)).statusCode).toBe(200);
+  });
+
+  it('запоминает отсутствие обложки, когда его подтвердил сам сервер', async () => {
+    opds.handler = () => ({ status: 404, body: Buffer.alloc(0), type: 'text/plain' });
+    expect((await cover(12)).statusCode).toBe(404);
+
+    opds.reset();
+    expect((await cover(12)).statusCode).toBe(404);
+    // Второй раз к content-service не ходим: ответ взят из кэша.
+    expect(opds.requests).toHaveLength(0);
+  });
+
+  it('скачивание не встаёт в очередь за сеткой обложек', async () => {
+    // Страница выдачи: сорок обложек разом, по 40 мс каждая, — это 800 мс работы
+    // content-service, которому за раз посильны две.
+    const covers = Array.from({ length: 40 }, (_, index) => cover(100 + index));
+    // Ждём, пока запросы действительно уедут: иначе скачивание обгонит их само собой
+    // и тест ничего не проверит.
+    while (opds.requests.length < 5) await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const started = Date.now();
+    const download = await fastify.inject({
+      method: 'GET',
+      url: `/api/v1/books/${bookId}/content?format=zip`,
+      headers: { cookie },
+    });
+    const elapsed = Date.now() - started;
+
+    expect(download.statusCode).toBe(200);
+    // До исправления скачивание стояло в общей очереди и ждало все обложки.
+    expect(elapsed).toBeLessThan(400);
+
+    await Promise.all(covers);
+    // Очередь держим у себя, а не наваливаем на content-service: у него она не
+    // приоритетная, и скачивание из неё уже не вытащить.
+    expect(opds.maxInFlight).toBeLessThanOrEqual(2);
+  });
+
+  it('подставляет имя файла, если content-service его не прислал', async () => {
+    const response = await fastify.inject({
+      method: 'GET',
+      url: `/api/v1/books/${bookId}/content?format=zip`,
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-disposition']).toMatch(/^attachment; filename=".+\.zip"/);
   });
 });

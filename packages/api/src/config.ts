@@ -14,6 +14,12 @@ export interface Config {
   cacheDir: string;
   /** Внутренний C++-сервер FLibrary (`opds`) — источник обложек и файлов книг. */
   contentServiceUrl: string;
+  /**
+   * Сколько запросов к content-service можно держать в полёте одновременно.
+   * Не тюнинг, а защита: каждый его обработчик занимает поток из глобального
+   * QThreadPool, см. комментарий в `src/content/opds.ts`.
+   */
+  contentServiceConcurrency: number;
   /** Секрет для подписи идентификаторов сессий. */
   sessionSecret: string;
   sessionTtlDays: number;
@@ -59,6 +65,7 @@ export function loadConfig(): Config {
     appDb: resolve(required('APP_DB', '../../data/app.db')),
     cacheDir: resolve(required('CACHE_DIR', '../../data/cache')),
     contentServiceUrl: required('CONTENT_SERVICE_URL', 'http://127.0.0.1:12791'),
+    contentServiceConcurrency: number('CONTENT_SERVICE_CONCURRENCY', 4),
     // В проде секрет обязателен; в разработке допускаем предсказуемый, иначе
     // каждый перезапуск разлогинивает.
     sessionSecret: isProduction
@@ -75,6 +82,12 @@ export function loadConfig(): Config {
 
   if (isProduction && config.sessionSecret.length < 32) {
     throw new Error('SESSION_SECRET в проде должен быть не короче 32 символов');
+  }
+
+  // Единицу оставляем допустимой (полная сериализация), а вот ноль или дробь — это
+  // молча неработающий сервис.
+  if (!Number.isInteger(config.contentServiceConcurrency) || config.contentServiceConcurrency < 1) {
+    throw new Error('CONTENT_SERVICE_CONCURRENCY должно быть целым числом не меньше 1');
   }
 
   return config;
