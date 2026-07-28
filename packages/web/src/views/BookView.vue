@@ -8,7 +8,7 @@ import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 
-import { downloadBook, getBook, getBookDetails, getBookReviews, getCollection } from '@/api/client';
+import { downloadBook, getBook, getBookDetails, getBookReviews } from '@/api/client';
 import BookCover from '@/components/BookCover.vue';
 import FlagIcon from '@/components/FlagIcon.vue';
 import MetaRow from '@/components/MetaRow.vue';
@@ -21,14 +21,6 @@ const bookId = computed(() => Number(route.params.bookId));
 const book = useQuery({
   queryKey: computed(() => ['book', bookId.value]),
   queryFn: () => getBook(bookId.value),
-});
-
-// Нужны только сведения о коллекции целиком: есть ли в ней аннотации вообще.
-// Запрос кэшируется надолго и разделяется с поиском, лишним походом не будет.
-const collection = useQuery({
-  queryKey: ['collection'],
-  queryFn: getCollection,
-  staleTime: 10 * 60_000,
 });
 
 /**
@@ -97,13 +89,6 @@ const downloads = computed(() =>
   })),
 );
 
-/**
- * Аннотации в коллекции опциональны: inpx импортируют и без них (флаг LoadAnnotations
- * у FLibrary). Тогда её нет ни у одной книги, и «у этой книги нет аннотации» — неправда,
- * которая вдобавок заставляет считать сломанным поиск по аннотации.
- */
-const noAnnotationsAtAll = computed(() => collection.data.value?.annotations === 0);
-
 /** Формат, который сейчас качается: файл собирается на стороне FLibrary не мгновенно. */
 const downloading = ref<string | null>(null);
 const downloadError = ref<string | null>(null);
@@ -162,13 +147,17 @@ async function download(format: string): Promise<void> {
 
             <!-- Метаданные — списком определений, а не строкой тегов вперемешку:
                  раньше серия, год, язык и жанры лежали рядом одинаковыми плашками,
-                 и что из них что — приходилось угадывать. -->
+                 и что из них что — приходилось угадывать.
+
+                 Каждое значение ведёт в поиск с этим фильтром, а не в раздел «Авторы»
+                 или «Языки»: из карточки книги хочется увидеть похожие книги и тут же
+                 сузить запрос дальше, а разделы — это отдельный способ листать каталог. -->
             <dl class="meta">
               <MetaRow v-if="data.authors.length > 0" label="Автор">
                 <RouterLink
                   v-for="author in data.authors"
                   :key="author.authorId"
-                  :to="{ name: 'authors', params: { authorId: author.authorId } }"
+                  :to="{ name: 'search', query: { author: String(author.authorId) } }"
                 >
                   {{ author.name }}
                 </RouterLink>
@@ -189,7 +178,7 @@ async function download(format: string): Promise<void> {
                 <RouterLink
                   v-for="genre in data.genres ?? []"
                   :key="genre.code"
-                  :to="{ name: 'genres', params: { code: genre.code } }"
+                  :to="{ name: 'search', query: { genre: genre.code } }"
                 >
                   {{ genre.title }}
                 </RouterLink>
@@ -208,7 +197,7 @@ async function download(format: string): Promise<void> {
                 <RouterLink
                   class="row"
                   style="gap: 0.4rem"
-                  :to="{ name: 'languages', params: { code: data.lang } }"
+                  :to="{ name: 'search', query: { lang: data.lang } }"
                 >
                   <FlagIcon :code="data.lang" :width="18" />
                   {{ languageName(data.lang) }}
@@ -221,7 +210,7 @@ async function download(format: string): Promise<void> {
                 <RouterLink
                   class="row"
                   style="gap: 0.4rem"
-                  :to="{ name: 'languages', params: { code: file.srcLang } }"
+                  :to="{ name: 'search', query: { lang: file.srcLang } }"
                 >
                   <FlagIcon :code="file.srcLang" :width="18" />
                   {{ languageName(file.srcLang) }}
@@ -275,19 +264,12 @@ async function download(format: string): Promise<void> {
               <MetaRow v-if="data.fileName" label="Файл">{{ data.fileName }}</MetaRow>
             </dl>
 
-            <section class="stack" style="gap: 0.35rem">
+            <!-- Аннотации нет — нет и раздела: в коллекциях, импортированных без
+                 LoadAnnotations, её нет ни у одной книги, и заголовок с объяснением
+                 стоял бы на каждой карточке. -->
+            <section v-if="annotation" class="stack" style="gap: 0.35rem">
               <h3 style="margin: 0; font-size: 1rem">Аннотация</h3>
-              <p v-if="annotation" style="margin: 0; white-space: pre-line">{{ annotation }}</p>
-              <!-- Пока файл книги не разобран, «аннотации нет» говорить рано: она может
-                   найтись в нём даже там, где в коллекции её не было. -->
-              <span v-else-if="fileDetails.isLoading.value" class="muted">Читаем файл книги…</span>
-              <!-- Разные вещи: у книги нет аннотации / коллекция собрана без аннотаций.
-                   Вторая заодно объясняет, почему поиск по аннотации ничего не находит. -->
-              <span v-else-if="noAnnotationsAtAll" class="muted">
-                Коллекция импортирована без аннотаций — их нет ни у одной книги, и поиск по
-                аннотации в ней ничего не найдёт.
-              </span>
-              <span v-else class="muted">У этой книги аннотации нет.</span>
+              <p style="margin: 0; white-space: pre-line">{{ annotation }}</p>
             </section>
 
             <!-- Содержание — как в десктопном FLibrary. Заголовки берутся из файла, так

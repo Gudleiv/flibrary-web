@@ -38,6 +38,7 @@ describe('параметры URL поиска', () => {
       ...createEmptyForm(),
       languages: ['ru', 'en'],
       genres: ['001', '002.001'],
+      refineGenres: ['003.002'],
       exts: ['fb2'],
       series: [5],
       yearFrom: 1960,
@@ -49,6 +50,22 @@ describe('параметры URL поиска', () => {
     };
 
     expect(fromQueryParams(toQueryParams(form))).toEqual(form);
+  });
+
+  it('жанр уточнения не подмешивается к жанру формы', () => {
+    // Один список означал бы «детское ИЛИ фэнтези» — уточнение вместо сужения
+    // молча расширяло бы выдачу.
+    const params = toQueryParams({
+      ...createEmptyForm(),
+      genres: ['007'],
+      refineGenres: ['002.001'],
+    });
+
+    expect(params).toEqual({ genre: '007', refine: '002.001' });
+    expect(fromQueryParams(params)).toMatchObject({
+      genres: ['007'],
+      refineGenres: ['002.001'],
+    });
   });
 
   describe('старые ссылки', () => {
@@ -138,6 +155,22 @@ describe('форма → дерево предикатов', () => {
       op: 'in',
       values: ['001'],
       includeChildren: true,
+    });
+  });
+
+  it('жанр формы и жанр уточнения сходятся по И, а не в один список', () => {
+    const query = buildQuery({
+      ...createEmptyForm(),
+      genres: ['007'],
+      refineGenres: ['002.001'],
+    });
+
+    expect(query.where).toEqual({
+      op: 'and',
+      nodes: [
+        { field: 'genre', op: 'in', values: ['007'], includeChildren: true },
+        { field: 'genre', op: 'in', values: ['002.001'], includeChildren: true },
+      ],
     });
   });
 

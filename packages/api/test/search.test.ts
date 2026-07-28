@@ -372,6 +372,65 @@ describeIfFixtures('поиск', () => {
       expect(body.facets[0].values[0].label).toBeTruthy();
     });
 
+    it('показывают выбранное значение и тогда, когда под него не попало ни одной книги', async () => {
+      const found = (await search({ where: ALL_BOOKS, limit: 1 })).json();
+      const authorId = found.items[0].authors[0].authorId;
+
+      const body = (
+        await counts({
+          where: {
+            op: 'and',
+            nodes: [
+              { field: 'title', op: 'prefix', value: 'ЮЮЮ' },
+              { field: 'authorId', op: 'in', values: [authorId] },
+            ],
+          },
+          facets: ['author'],
+        })
+      ).json();
+
+      // Выдача пуста как раз из-за этого автора, и снять фильтр можно только тем,
+      // что он остался в панели. Ноль в счётчике честный: «под текущий запрос —
+      // ни одной», а не «книг у автора нет».
+      expect(body.total).toBe(0);
+      expect(body.facets[0].values).toHaveLength(1);
+      expect(body.facets[0].values[0]).toMatchObject({ value: String(authorId), count: 0 });
+      expect(body.facets[0].values[0].label).toBeTruthy();
+    });
+
+    it('считают жанр по отфильтрованному множеству, а выбранные жанры сходятся по И', async () => {
+      const all = (await counts({ where: ALL_BOOKS, facets: ['genre'] })).json();
+      const chosen = all.facets[0].values[0].value as string;
+
+      const inside = (
+        await counts({
+          where: { field: 'genre', op: 'in', values: [chosen], includeChildren: true },
+          facets: ['genre'],
+        })
+      ).json();
+
+      const other = inside.facets[0].values.find(
+        (value: { value: string }) => value.value !== chosen,
+      ) as { value: string; count: number };
+
+      const both = (
+        await counts({
+          where: {
+            op: 'and',
+            nodes: [
+              { field: 'genre', op: 'in', values: [chosen], includeChildren: true },
+              { field: 'genre', op: 'in', values: [other.value], includeChildren: true },
+            ],
+          },
+        })
+      ).json();
+
+      // Жанров у книги несколько, поэтому второй жанр сужает выдачу, а не расширяет
+      // её («детское И фэнтези»), и счётчик в панели обещает ровно то, что даст щелчок.
+      expect(both.total).toBe(other.count);
+      expect(both.total).toBeLessThan(inside.total);
+    });
+
     it('честно помечают обрезанный список', async () => {
       const body = (await counts({ where: ALL_BOOKS, facets: ['author', 'lang'] })).json();
 

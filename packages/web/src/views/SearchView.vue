@@ -21,7 +21,13 @@ import BookList from '@/components/BookList.vue';
 import FacetPanel from '@/components/FacetPanel.vue';
 import FlagIcon from '@/components/FlagIcon.vue';
 import { getCollection, getGenres, getLanguages, search, searchFacets } from '@/api/client';
-import { fromSelection, toSelection, toTreeNodes, type GenreSelection } from '@/lib/genres';
+import {
+  fromSelection,
+  genreTitles,
+  toSelection,
+  toTreeNodes,
+  type GenreSelection,
+} from '@/lib/genres';
 import { compareByLanguageName, languageName } from '@/lib/lang';
 import { useSearchState, type SearchForm } from '@/composables/useSearchState';
 
@@ -110,7 +116,41 @@ const items = computed<BookListItem[]>(() => results.data.value?.items ?? []);
 const total = computed(() => counts.data.value?.total ?? null);
 const tookMs = computed(() => results.data.value?.tookMs ?? null);
 
-const facets = computed<Facet[]>(() => counts.data.value?.facets ?? []);
+const titles = computed(() => genreTitles(genres.data.value?.items ?? []));
+
+/**
+ * Счётчики панели плюс выбранные жанры, под которые не попало ни одной книги.
+ *
+ * Такой жанр исчезает из панели ровно тогда, когда выдача из-за него и опустела, —
+ * и снять уточнение становится нечем. Для остальных полей это делает сервер
+ * (закреплённые значения), а жанр он не закрепляет: его фасет считается по полному
+ * фильтру. Подписи берём из справочника — он и так загружен ради дерева.
+ */
+const facets = computed<Facet[]>(() => {
+  const counted = counts.data.value?.facets ?? [];
+  const selected = applied.value.refineGenres;
+  if (selected.length === 0) return counted;
+
+  return counted.map((facet) => {
+    if (facet.field !== 'genre') return facet;
+
+    const present = new Set(facet.values.map((value) => value.value));
+    const missing = selected.filter((code) => !present.has(code));
+    if (missing.length === 0) return facet;
+
+    return {
+      ...facet,
+      values: [
+        ...missing.map((code) => ({
+          value: code,
+          label: titles.value.get(code) ?? code,
+          count: 0,
+        })),
+        ...facet.values,
+      ],
+    };
+  });
+});
 
 /** Сортировка применяется сразу, поэтому читается из применённого запроса, а не из черновика. */
 const sortField = computed({
@@ -122,9 +162,12 @@ function flipSortDir(): void {
   apply({ sortDir: applied.value.sortDir === 'asc' ? 'desc' : 'asc', page: 1 });
 }
 
-/** Что уже выбрано — строками, как значения отдаёт фасет. */
+/**
+ * Что уже выбрано — строками, как значения отдаёт фасет. Жанры формы сюда тоже
+ * входят: в панели они показаны выбранными, и снимать их щелчком логично там же.
+ */
 const selectedFacets = computed<Partial<Record<FacetField, string[]>>>(() => ({
-  genre: applied.value.genres,
+  genre: [...applied.value.genres, ...applied.value.refineGenres],
   lang: applied.value.languages,
   ext: applied.value.exts,
   author: applied.value.authors.map(String),
@@ -142,7 +185,13 @@ function onFacetToggle(field: FacetField, value: string): void {
 
   switch (field) {
     case 'genre':
-      form.genres = flip(form.genres, value);
+      // Жанр из формы панель тоже показывает выбранным — щелчок по нему должен
+      // снимать фильтр там, где он стоит, а не заводить второе такое же условие.
+      if (form.genres.includes(value)) {
+        form.genres = form.genres.filter((code) => code !== value);
+      } else {
+        form.refineGenres = flip(form.refineGenres, value);
+      }
       break;
     case 'lang':
       form.languages = flip(form.languages, value);
@@ -169,6 +218,19 @@ function onFacetToggle(field: FacetField, value: string): void {
   submit();
 }
 
+/**
+ * Уточнения переживают новый поиск — так и задумано: найдя автора, дальше ищут его
+ * же книги. Но когда из-за них не находится ничего, «ослабьте фильтры» звучит как
+ * совет про поля формы, а виноваты отметки в панели, куда никто не смотрит.
+ */
+const emptyHint = computed(() => {
+  const { authors, series, exts, refineGenres } = applied.value;
+  const refined = authors.length + series.length + exts.length + refineGenres.length > 0;
+  return refined
+    ? 'Ничего не найдено. Уточнения слева при новом поиске не сбрасываются — возможно, дело в них.'
+    : 'Ничего не найдено. Попробуйте ослабить фильтры.';
+});
+
 function onPage(page: number, perPage: number): void {
   apply({ page, perPage });
 }
@@ -179,6 +241,7 @@ function reset(): void {
     author: '',
     languages: [],
     genres: [],
+    refineGenres: [],
     exts: [],
     authors: [],
     series: [],
@@ -242,8 +305,18 @@ function reset(): void {
               </template>
             </TreeSelect>
 
-            <div class="stack" style="gap: 0.35rem">
+            <!-- Ползунок отдельной строкой, поля под ним: зажатый между двумя полями
+                 ввода, он в колонке шириной 280px оставался шириной в пару сантиметров,
+                 и попасть ручкой в нужный год было нечем. -->
+            <div class="stack" style="gap: 0.5rem">
               <span class="muted">Год издания</span>
+              <Slider
+                v-model="yearRange"
+                range
+                :min="yearBounds.min"
+                :max="yearBounds.max"
+                style="margin: 0.35rem 0.5rem"
+              />
               <div class="row" style="flex-wrap: nowrap">
                 <InputNumber
                   v-model="form.yearFrom"
@@ -251,24 +324,20 @@ function reset(): void {
                   :use-grouping="false"
                   :min="yearBounds.min"
                   :max="yearBounds.max"
-                  :input-style="{ width: '4.5rem' }"
+                  :input-style="{ width: '100%' }"
                   size="small"
+                  fluid
                 />
-                <Slider
-                  v-model="yearRange"
-                  range
-                  :min="yearBounds.min"
-                  :max="yearBounds.max"
-                  style="flex: 1"
-                />
+                <span class="muted">—</span>
                 <InputNumber
                   v-model="form.yearTo"
                   :placeholder="String(yearBounds.max)"
                   :use-grouping="false"
                   :min="yearBounds.min"
                   :max="yearBounds.max"
-                  :input-style="{ width: '4.5rem' }"
+                  :input-style="{ width: '100%' }"
                   size="small"
+                  fluid
                 />
               </div>
             </div>
@@ -323,6 +392,7 @@ function reset(): void {
       :loading="results.isLoading.value"
       :fetching="results.isFetching.value"
       :took-ms="tookMs"
+      :empty-hint="emptyHint"
       :error="
         results.isError.value ? ((results.error.value as Error)?.message ?? 'Ошибка поиска') : null
       "

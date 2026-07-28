@@ -81,7 +81,7 @@ export function runFacets(db: Db, plans: FacetPlan[], userId: number, cache: Que
           shared ? { kind: 'table', name: `temp.${HITS}` } : { kind: 'inline' },
         );
         const rows = db.prepare(query.sql).all(query.params, { userId }) as FacetRow[];
-        const facet = toFacet(plan, rows);
+        const facet = toFacet(plan, rows, missingSelected(db, plan, rows));
         computed.set(plan.field, facet);
         cache.set(cacheKeys.get(plan.field) as string, facet);
       }
@@ -92,6 +92,34 @@ export function runFacets(db: Db, plans: FacetPlan[], userId: number, cache: Que
 
   // Порядок ответа — порядок запрошенных полей.
   return plans.map((plan) => computed.get(plan.field) as Facet);
+}
+
+/**
+ * Выбранные значения, которых в счётчиках не оказалось, — со счётчиком 0.
+ *
+ * Уточнения не сбрасываются при новом поиске, и без этого выбранный автор
+ * пропадал бы из панели ровно тогда, когда выдача из-за него и опустела: снять
+ * фильтр стало бы нечем. Подписи приходится доставать отдельным запросом — в
+ * счётчиках этих значений нет, а идентификатор пользователю ни о чём не говорит.
+ */
+function missingSelected(db: Db, plan: FacetPlan, rows: FacetRow[]): FacetRow[] {
+  if (plan.pinned.length === 0) return [];
+
+  // Сравниваем с тем, что переживёт обрезание по лимиту: закреплённые значения
+  // стоят в начале, но их самих может оказаться больше лимита.
+  const present = new Set(rows.slice(0, plan.spec.limit).map((row) => row.value));
+  const missing = plan.pinned.filter((value) => !present.has(value));
+  if (missing.length === 0) return [];
+
+  const labels = new Map<string, string | null>();
+  const lookup = plan.spec.lookup;
+  if (lookup !== null) {
+    for (const row of db.prepare(lookup(missing.length)).all(missing) as FacetRow[]) {
+      if (row.value !== null) labels.set(row.value, row.label);
+    }
+  }
+
+  return missing.map((value) => ({ value, label: labels.get(value) ?? null, count: 0 }));
 }
 
 function materialize(db: Db, plan: FacetPlan, userId: number): void {

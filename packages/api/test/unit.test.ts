@@ -173,12 +173,25 @@ describe('компиляция фасетов', () => {
 
   it('считает по всей коллекции, когда кроме своего фильтра ничего нет', () => {
     const [plan] = compileFacets(
-      { where: { field: 'genre', op: 'in', values: ['sf'] }, facets: ['genre'] },
+      { where: { field: 'lang', op: 'in', values: ['ru'] }, facets: ['lang'] },
       context,
     );
 
     expect(plan?.matched.sql).toBe('SELECT BookID FROM coll.Books');
-    expect(plan?.pinned).toEqual(['sf']);
+    expect(plan?.pinned).toEqual(['ru']);
+  });
+
+  it('жанр — единственный фасет, который сужает сам себя', () => {
+    // Жанров у книги несколько, и выбранные складываются по AND: «какие ещё жанры
+    // есть у найденного» надо считать по уже отфильтрованному множеству, иначе
+    // счётчик обещает одно, а щелчок по нему даёт совсем другое число.
+    const [plan] = compileFacets(
+      { where: { field: 'genre', op: 'in', values: ['sf'] }, facets: ['genre'] },
+      context,
+    );
+
+    expect(plan?.matched.sql).toContain('Genre_List');
+    expect(plan?.pinned).toEqual([]);
   });
 
   it('дедуплицирует множество: у книги может быть два подходящих автора', () => {

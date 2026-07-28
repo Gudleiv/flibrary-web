@@ -19,6 +19,12 @@ export interface SearchForm {
   author: string;
   languages: string[];
   genres: string[];
+  /**
+   * Жанры, выбранные в панели уточнения, — отдельно от жанров формы: с ними они
+   * сходятся по AND («детское И фэнтези»), а в одном списке молча расширяли бы
+   * выдачу до «детское ИЛИ фэнтези».
+   */
+  refineGenres: string[];
   /** Расширения без точки — как их отдаёт фасет. */
   exts: string[];
   authors: number[];
@@ -48,6 +54,7 @@ export const createEmptyForm = (): SearchForm => ({
   author: '',
   languages: [],
   genres: [],
+  refineGenres: [],
   exts: [],
   authors: [],
   series: [],
@@ -77,6 +84,12 @@ function buildWhere(form: SearchForm): SearchNode {
   }
   if (form.genres.length > 0) {
     nodes.push({ field: 'genre', op: 'in', values: form.genres, includeChildren: true });
+  }
+  // Второй предикат, а не общий список значений: внутри одного `in` жанры сходятся
+  // по ИЛИ, и уточнение «фэнтези» поверх «детского» вместо сужения давало бы всю
+  // фантастику разом. Отдельным предикатом они попадают в AND, как и ожидается.
+  if (form.refineGenres.length > 0) {
+    nodes.push({ field: 'genre', op: 'in', values: form.refineGenres, includeChildren: true });
   }
   if (form.exts.length > 0) {
     nodes.push({ field: 'ext', op: 'in', values: form.exts });
@@ -140,6 +153,9 @@ export function toQueryParams(form: SearchForm): Record<string, string> {
   if (form.author !== empty.author) params.by = form.author;
   if (form.languages.length > 0) params.lang = form.languages.join(LIST_SEPARATOR);
   if (form.genres.length > 0) params.genre = form.genres.join(LIST_SEPARATOR);
+  // Своим ключом, а не вместе с `genre`: в ссылке должно быть видно, что «детское»
+  // и «фэнтези» — это пересечение, а не два равноправных жанра.
+  if (form.refineGenres.length > 0) params.refine = form.refineGenres.join(LIST_SEPARATOR);
   if (form.exts.length > 0) params.ext = form.exts.join(LIST_SEPARATOR);
   if (form.authors.length > 0) params.author = form.authors.join(LIST_SEPARATOR);
   if (form.series.length > 0) params.series = form.series.join(LIST_SEPARATOR);
@@ -188,6 +204,7 @@ export function fromQueryParams(query: Record<string, unknown>): SearchForm {
     author: string('by') ?? (legacyByAuthor ? legacy : form.author),
     languages: list('lang'),
     genres: list('genre'),
+    refineGenres: list('refine'),
     exts: list('ext'),
     authors: ids('author'),
     series: ids('series'),

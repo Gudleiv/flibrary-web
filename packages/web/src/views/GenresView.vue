@@ -110,9 +110,28 @@ const count = (value: number | undefined): string => (value ?? 0).toLocaleString
 </template>
 
 <style scoped>
+/* Заголовок жанра — такая же строка, как пункт списка: подпись слева, счётчик
+   у правого края. Без `flex: 1` заголовок сжимался по тексту, и счётчики стояли
+   лесенкой — каждый на своём отступе, а стрелка прыгала вслед за длиной названия. */
 .genre-header {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 0.5rem;
   align-items: baseline;
+  justify-content: space-between;
+}
+
+/* Отступы аккордеона выравниваем сами: по умолчанию у заголовка и содержимого они
+   свои (18px), из-за чего счётчик жанра и счётчики его поджанров оказывались в
+   разных колонках, а раскрытая панель выглядела съехавшей. */
+:deep(.p-accordionheader) {
+  padding: 0.55rem 0.4rem;
+  gap: 0.5rem;
+}
+
+:deep(.p-accordioncontent-content) {
+  /* Справа — место под стрелку заголовка, чтобы счётчики встали в одну колонку. */
+  padding: 0 calc(0.4rem + 14px + 0.5rem) 0.5rem 0.9rem;
 }
 </style>
