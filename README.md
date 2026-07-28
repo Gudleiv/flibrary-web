@@ -256,7 +256,7 @@ C++-сервер собираются в образах. Библиотека (`
 
 ```bash
 cd deploy
-cp .env.example .env && chmod 600 .env   # SESSION_SECRET, LIBRARY_PATH, домен
+cp .env.example .env && chmod 600 .env   # SESSION_SECRET, пути к библиотеке, домен
 docker compose up -d --build
 
 docker compose exec api node dist/cli/users.js add user 'пароль'
