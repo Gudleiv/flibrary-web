@@ -13,6 +13,7 @@
     "build": "pnpm --filter @flibrary/contract build && pnpm --filter @flibrary/api build && pnpm --filter @flibrary/web build",
     "typecheck": "pnpm --filter @flibrary/contract build && pnpm -r --no-bail typecheck",
     "lint": "eslint .",
+    "test": "pnpm -r --no-bail test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "fixtures": "pnpm --filter @flibrary/fixtures generate",

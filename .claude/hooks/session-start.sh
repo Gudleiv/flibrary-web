@@ -23,6 +23,13 @@ FIXTURE_BOOKS="${FIXTURE_BOOKS:-5000}"
 
 corepack enable >/dev/null 2>&1 || true
 
+# 7-Zip нужен отзывам читателей: и генератору фикстур, чтобы собрать архив, и API,
+# чтобы его прочитать. Без него всё остальное работает, просто раздела отзывов не будет.
+if ! command -v 7z >/dev/null 2>&1; then
+	echo "==> 7-Zip (для отзывов читателей)"
+	apt-get install --yes p7zip-full >/dev/null 2>&1 || echo "    не установился — отзывов не будет"
+fi
+
 echo "==> Зависимости"
 pnpm install --prefer-offline
 

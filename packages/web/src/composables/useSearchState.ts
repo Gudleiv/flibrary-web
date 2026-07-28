@@ -126,7 +126,11 @@ export function buildFacetQuery(form: SearchForm): SearchQuery {
 
 const LIST_SEPARATOR = ',';
 
-function toQueryParams(form: SearchForm): Record<string, string> {
+/**
+ * Форма → параметры URL. Экспортируется вместе с обратной функцией: они образуют пару,
+ * и проверять их имеет смысл только вместе — на них держится совместимость ссылок.
+ */
+export function toQueryParams(form: SearchForm): Record<string, string> {
   const params: Record<string, string> = {};
   const empty = createEmptyForm();
 
@@ -149,7 +153,7 @@ function toQueryParams(form: SearchForm): Record<string, string> {
   return params;
 }
 
-function fromQueryParams(query: Record<string, unknown>): SearchForm {
+export function fromQueryParams(query: Record<string, unknown>): SearchForm {
   const string = (key: string): string | undefined => {
     const value = query[key];
     return typeof value === 'string' ? value : undefined;
