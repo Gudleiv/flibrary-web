@@ -73,20 +73,42 @@ export class ContentServiceBusyError extends Error {
 /** Формат, в котором отдаётся книга. */
 export type BookFormat = 'original' | 'fb2' | 'zip' | 'epub' | 'mobi';
 
-/** Обложка ждёт слот недолго: лучше показать заглушку, чем держать соединение. */
-const COVER_QUEUE_TIMEOUT_MS = 5_000;
+/**
+ * Обложка стоит в очереди долго и терпеливо.
+ *
+ * Раньше здесь было пять секунд, и это ошибка: страница выдачи приходит пачкой, пачка
+ * не помещается в четыре слота, и хвост её получал 503 ещё до того, как первый запрос
+ * успевал ответить. Двух читателей хватало, чтобы у обоих выдача осыпалась заглушками.
+ * Ждать в очереди дешевле, чем не показать обложку вовсе: очередь — это память под
+ * несколько объектов, а не соединение и не поток на той стороне.
+ */
+const COVER_QUEUE_TIMEOUT_MS = 20_000;
 /** Файл книги — единственное, ради чего пользователь готов ждать. */
 const FILE_QUEUE_TIMEOUT_MS = 30_000;
 
-// Таймауты самих запросов оставлены щедрыми намеренно: `opds` падает по segfault, когда
-// клиент обрывает соединение на середине выдачи, а срабатывание таймаута — это ровно
-// обрыв. Ждать вместо клиента должна очередь (она отвечает 503, ни разу не постучавшись),
-// а таймаут остаётся страховкой на случай, когда сервер уже завис.
-const COVER_HEADERS_TIMEOUT_MS = 30_000;
-const COVER_BODY_TIMEOUT_MS = 60_000;
+// Обложка — маленькая картинка из уже открытого архива: не ответить за десять секунд
+// может только зависший сервер, и тогда ждать больше нечего. Раньше тут стояло 30/60
+// в пару к короткой очереди — теперь ждёт очередь, а таймаут остался страховкой.
+//
+// Осторожно: срабатывание таймаута — это обрыв соединения на середине ответа, а `opds`
+// на таком обрыве падает по segfault. Поэтому пороги не занижаем дальше и оставляем
+// файлам их прежние — книга распаковывается долго и законно.
+const COVER_HEADERS_TIMEOUT_MS = 10_000;
+const COVER_BODY_TIMEOUT_MS = 10_000;
 /** Распаковка большой книги с восстановлением картинок бывает небыстрой. */
 const FILE_HEADERS_TIMEOUT_MS = 30_000;
 const FILE_BODY_TIMEOUT_MS = 120_000;
+
+/**
+ * Сорвавшееся соединение повторяем один раз.
+ *
+ * QHttpServer отдаёт `Keep-Alive: timeout=5` и закрывает соединение сам; если запрос
+ * уехал в сокет, который та сторона уже закрывает, undici отдаёт ошибку сокета — и
+ * снаружи это выглядит как «сервер недоступен», хотя он жив и следующий запрос пройдёт.
+ * GET идемпотентен, так что повтор безопасен; повторяем только то, что оборвалось, не
+ * начав отвечать, и только один раз — иначе лежащий сервер мы будем долбить вдвое чаще.
+ */
+const RETRIED_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
 
 type Lane = 'cover' | 'file';
 
@@ -242,17 +264,7 @@ export class ContentService {
 
     let response;
     try {
-      response = await this.pool.request({
-        method: 'GET',
-        path: url.pathname + url.search,
-        headers: {
-          // Сервер жмёт ответ, только если его об этом попросили, а мы отдаём наружу
-          // его content-length: пусть тело и длина остаются согласованными.
-          'accept-encoding': 'identity',
-        },
-        headersTimeout: lane === 'cover' ? COVER_HEADERS_TIMEOUT_MS : FILE_HEADERS_TIMEOUT_MS,
-        bodyTimeout: lane === 'cover' ? COVER_BODY_TIMEOUT_MS : FILE_BODY_TIMEOUT_MS,
-      });
+      response = await this.send(url, lane);
     } catch (error) {
       release();
       this.log.warn({ err: error, url: url.toString() }, 'запрос к content-service не удался');
@@ -280,6 +292,39 @@ export class ContentService {
       body: response.body,
     };
   }
+
+  /** Запрос с одним повтором на оборванном соединении — см. RETRIED_CODES. */
+  private async send(url: URL, lane: Lane): ReturnType<Pool['request']> {
+    const options = {
+      method: 'GET' as const,
+      path: url.pathname + url.search,
+      headers: {
+        // Сервер жмёт ответ, только если его об этом попросили, а мы отдаём наружу
+        // его content-length: пусть тело и длина остаются согласованными.
+        'accept-encoding': 'identity',
+      },
+      headersTimeout: lane === 'cover' ? COVER_HEADERS_TIMEOUT_MS : FILE_HEADERS_TIMEOUT_MS,
+      bodyTimeout: lane === 'cover' ? COVER_BODY_TIMEOUT_MS : FILE_BODY_TIMEOUT_MS,
+    };
+
+    try {
+      return await this.pool.request(options);
+    } catch (error) {
+      if (!isBrokenConnection(error)) throw error;
+      this.log.warn({ err: error, url: url.toString() }, 'соединение оборвалось, повторяем');
+      return await this.pool.request(options);
+    }
+  }
+}
+
+/**
+ * Соединение оборвалось, не начав отвечать. Таймаут сюда не попадает намеренно: там
+ * сервер, скорее всего, ещё занят предыдущим запросом, и повтор только добавит ему работы.
+ */
+function isBrokenConnection(error: unknown): boolean {
+  if (isTimeout(error)) return false;
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && RETRIED_CODES.has(code);
 }
 
 function isTimeout(error: unknown): boolean {

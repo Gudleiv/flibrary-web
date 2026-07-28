@@ -84,16 +84,21 @@ const isSelected = (field: FacetField, value: string): boolean =>
           'facet-value--empty': item.count === 0,
         }"
         :aria-pressed="isSelected(section.field, item.value)"
+        :title="section.field === 'lang' ? languageName(item.value) : (item.label ?? item.value)"
         @click="emit('toggle', section.field, item.value)"
       >
         <!-- Подпись языка — на клиенте: названия берутся из Intl браузера, у сервера
              своего справочника языков нет и заводить его ради этого незачем. -->
-        <span v-if="section.field === 'lang'" class="facet-value__label row" style="gap: 0.4rem">
+        <span
+          v-if="section.field === 'lang'"
+          class="facet-value__label row"
+          style="gap: 0.4rem; flex-wrap: nowrap"
+        >
           <FlagIcon :code="item.value" :width="16" />
           {{ languageName(item.value) }}
         </span>
         <span v-else class="facet-value__label">{{ item.label ?? item.value }}</span>
-        <span class="muted">{{ item.count }}</span>
+        <span class="muted facet-value__count">{{ item.count }}</span>
       </button>
 
       <Button
@@ -148,9 +153,19 @@ const isSelected = (field: FacetField, value: string): boolean =>
   opacity: 0.65;
 }
 
+/* Без flex/min-width подпись не сжималась: у элемента флексбокса минимальная ширина
+   равна содержимому, поэтому многоточие не появлялось никогда, а строка распирала
+   колонку. Полное значение остаётся в title. */
 .facet-value__label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Счётчик уезжать не должен: он короткий, а сжимают подпись. */
+.facet-value__count {
+  flex: none;
 }
 </style>

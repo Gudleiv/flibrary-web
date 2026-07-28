@@ -15,7 +15,8 @@ import type { BookListItem, SearchNode, SearchQuery, SearchResult } from '@flibr
 import { search } from '@/api/client';
 import { PER_PAGE_OPTIONS } from '@/composables/useSearchState';
 
-const DEFAULT_PER_PAGE = 50;
+/** Тот же, что и в поиске: разделы отличаются фильтром, а не размером страницы. */
+const DEFAULT_PER_PAGE = 20;
 
 export function useBrowse(where: ComputedRef<SearchNode | null>) {
   const route = useRoute();

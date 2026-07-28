@@ -110,7 +110,7 @@ describe('параметры URL поиска', () => {
     });
 
     it('размер страницы вне допустимого набора игнорируется', () => {
-      expect(fromQueryParams({ per: '1000' }).perPage).toBe(50);
+      expect(fromQueryParams({ per: '1000' }).perPage).toBe(20);
       expect(fromQueryParams({ per: '100' }).perPage).toBe(100);
     });
 

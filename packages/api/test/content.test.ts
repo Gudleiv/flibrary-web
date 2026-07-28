@@ -288,6 +288,8 @@ class FakeOpds {
   readonly requests: string[] = [];
   /** Пик числа принятых, но ещё не отвеченных запросов — глубина его очереди. */
   maxInFlight = 0;
+  /** Сколько ближайших запросов оборвать молча — имитация закрытого keep-alive. */
+  destroyNext = 0;
   /** Что отвечать: подменяется в тестах про ошибки. */
   handler: (path: string) => { status: number; body: Buffer; type: string } = () => ({
     status: 200,
@@ -307,6 +309,13 @@ class FakeOpds {
     this.server = createServer((request, response) => {
       const path = request.url ?? '';
       this.requests.push(path);
+
+      if (this.destroyNext > 0) {
+        this.destroyNext -= 1;
+        request.destroy();
+        return;
+      }
+
       this.inFlight += 1;
       this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
       this.run(() => {
@@ -475,6 +484,7 @@ describeIfFixtures('обложки и файлы под нагрузкой', () 
 
   afterEach(() => {
     opds.reset();
+    opds.destroyNext = 0;
     opds.handler = () => ({ status: 200, body: JPEG, type: 'image/jpeg' });
   });
 
@@ -514,6 +524,18 @@ describeIfFixtures('обложки и файлы под нагрузкой', () 
     expect(opds.requests).toHaveLength(0);
   });
 
+  it('повторяет запрос, если соединение оборвалось до ответа', async () => {
+    // QHttpServer закрывает keep-alive сам, и запрос, уехавший в закрывающееся
+    // соединение, обрывается не начав отвечать. Для читателя это выглядело как
+    // «сервер недоступен», хотя сервер жив и следующий запрос проходит.
+    opds.destroyNext = 1;
+
+    const response = await cover(13);
+
+    expect(response.statusCode).toBe(200);
+    expect(opds.requests).toHaveLength(2);
+  });
+
   it('скачивание не встаёт в очередь за сеткой обложек', async () => {
     // Страница выдачи: сорок обложек разом, по 40 мс каждая, — это 800 мс работы
     // content-service, которому за раз посильны две.
@@ -534,10 +556,13 @@ describeIfFixtures('обложки и файлы под нагрузкой', () 
     // До исправления скачивание стояло в общей очереди и ждало все обложки.
     expect(elapsed).toBeLessThan(400);
 
-    await Promise.all(covers);
+    const answered = await Promise.all(covers);
     // Очередь держим у себя, а не наваливаем на content-service: у него она не
     // приоритетная, и скачивание из неё уже не вытащить.
     expect(opds.maxInFlight).toBeLessThanOrEqual(2);
+    // И в этой очереди стоят, а не получают отказ: страница выдачи целиком не
+    // помещается в слоты никогда, и отказ здесь — это просто дыра вместо обложки.
+    expect(answered.every((response) => response.statusCode === 200)).toBe(true);
   });
 
   it('подставляет имя файла, если content-service его не прислал', async () => {

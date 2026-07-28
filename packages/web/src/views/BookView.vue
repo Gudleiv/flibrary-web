@@ -325,4 +325,12 @@ async function download(format: string): Promise<void> {
   padding: 0.5rem 0;
   border-top: 1px solid var(--p-content-border-color);
 }
+
+/* На телефоне обложка в 200px и кнопки скачивания оставляли тексту сантиметр
+   ширины, поэтому уходят наверх, а сведения занимают всю строку. */
+@media (max-width: 600px) {
+  .book-row {
+    flex-direction: column;
+  }
+}
 </style>

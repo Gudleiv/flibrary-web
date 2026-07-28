@@ -88,7 +88,7 @@ const count = (value: number | undefined): string => (value ?? 0).toLocaleString
     </template>
 
     <Message v-if="selected === null" severity="secondary" :closable="false">
-      Выберите жанр слева.
+      Выберите жанр.
     </Message>
 
     <template v-else>

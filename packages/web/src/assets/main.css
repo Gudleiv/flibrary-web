@@ -38,16 +38,21 @@ body {
   margin: 0 auto;
 }
 
+/* minmax(0, 1fr), а не 1fr: автоминимум колонки — это ширина самого длинного
+   неразрывного содержимого в ней (название серии в панели уточнения, имя файла в
+   карточке). С ним сетка растягивалась под подпись и тянула за собой всю страницу —
+   на телефоне приложение оказывалось шире экрана. Ноль в минимуме разрешает колонке
+   быть уже содержимого, а обрезают подписи те, кому это положено. */
 .search-layout {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
 }
 
 @media (max-width: 960px) {
   .search-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -55,15 +60,34 @@ body {
   display: flex;
   gap: 0.75rem;
   align-items: flex-start;
+  /* Названия из коллекции бывают одним словом на всю строку, а имена файлов —
+     через подчёркивания, которые браузер переносом не считает. На узком экране
+     такое слово выпирало за край карточки. */
+  overflow-wrap: anywhere;
 }
 
+/* Не сама картинка, а место под неё: пока обложка ждёт очереди, в этом же месте
+   крутится индикатор, а вёрстка не должна от этого меняться. */
 .book-cover {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
   width: 48px;
   height: 68px;
-  object-fit: cover;
   border-radius: 4px;
   background: var(--p-surface-200);
   flex: none;
+}
+
+.book-cover__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.book-cover__wait {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
 }
 
 .book-cover--large {
@@ -73,8 +97,6 @@ body {
 
 /* Заглушка вместо обложки: место занимает столько же, иначе вёрстка «прыгает». */
 .book-cover--empty {
-  display: grid;
-  place-items: center;
   color: var(--p-text-muted-color);
   background: var(--p-surface-100);
   border: 1px dashed var(--p-surface-300);
@@ -86,6 +108,10 @@ body {
 
 .book-cover--large.book-cover--empty .pi {
   font-size: 2.5rem;
+}
+
+.book-cover--large .book-cover__wait {
+  font-size: 1.5rem;
 }
 
 /* Карточка книги в выдаче — целиком ссылка, поэтому текст в ней остаётся обычным. */

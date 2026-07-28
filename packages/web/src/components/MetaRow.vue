@@ -17,14 +17,14 @@ defineProps<{ label: string }>();
 <style scoped>
 .meta-row {
   display: grid;
-  grid-template-columns: 10rem 1fr;
+  grid-template-columns: 10rem minmax(0, 1fr);
   gap: 0.5rem;
   padding: 0.2rem 0;
 }
 
 @media (max-width: 600px) {
   .meta-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0;
   }
 }
@@ -42,5 +42,8 @@ defineProps<{ label: string }>();
   flex-wrap: wrap;
   gap: 0.35rem 0.5rem;
   align-items: center;
+  /* Имя файла и архива — одно длинное «слово» с подчёркиваниями: без этого
+     оно выпирало за край карточки на узком экране. */
+  overflow-wrap: anywhere;
 }
 </style>

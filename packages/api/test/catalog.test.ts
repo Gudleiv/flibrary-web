@@ -96,6 +96,18 @@ describeIfFixtures('справочники', () => {
   });
 
   describe('авторы', () => {
+    /**
+     * Авторы, у которых видимое имя совпадает со справочником. «Неизвестный автор» —
+     * подставная подпись поверх английского `Unknown author`, и искать по ней нечего:
+     * в коллекции такой строки нет.
+     */
+    const realAuthors = async (): Promise<Array<{ authorId: number; name: string }>> => {
+      const all = (await get('/authors?limit=200')).json<{
+        items: Array<{ authorId: number; name: string }>;
+      }>();
+      return all.items.filter((item) => /^[А-ЯЁ][а-яё]+ [А-ЯЁ][а-яё]+/.test(item.name));
+    };
+
     it('отдаёт страницу списка и общее число', async () => {
       const response = await get('/authors?limit=5');
       expect(response.statusCode).toBe(200);
@@ -120,17 +132,56 @@ describeIfFixtures('справочники', () => {
       expect(second.items.some((item) => ids.has(item.authorId))).toBe(false);
     });
 
-    it('фильтрует по префиксу имени', async () => {
-      const all = (await get('/authors?limit=200')).json<{ items: Array<{ name: string }> }>();
-      const letter = all.items[0]?.name.charAt(0) ?? 'А';
+    it('находит по имени, а не только по фамилии', async () => {
+      const sample = (await realAuthors())[0];
+      expect(sample).toBeDefined();
+      const first = sample!.name.split(' ')[1]!;
 
-      const filtered = (await get(`/authors?q=${encodeURIComponent(letter)}&limit=200`)).json<{
-        items: Array<{ name: string }>;
-        total: number;
+      const found = (await get(`/authors?q=${encodeURIComponent(first)}&limit=200`)).json<{
+        items: Array<{ authorId: number }>;
       }>();
 
-      expect(filtered.total).toBeGreaterThan(0);
-      expect(filtered.items.every((item) => item.name.startsWith(letter))).toBe(true);
+      expect(found.items.some((item) => item.authorId === sample!.authorId)).toBe(true);
+    });
+
+    it('находит по середине фамилии', async () => {
+      const sample = (await realAuthors()).find((item) => item.name.split(' ')[0]!.length >= 5);
+      expect(sample).toBeDefined();
+      // Кусок фамилии без первой буквы: по префиксу такой запрос не нашёлся бы.
+      const inner = sample!.name.split(' ')[0]!.slice(1, 4);
+
+      const found = (await get(`/authors?q=${encodeURIComponent(inner)}&limit=200`)).json<{
+        items: Array<{ authorId: number }>;
+      }>();
+
+      expect(found.items.some((item) => item.authorId === sample!.authorId)).toBe(true);
+    });
+
+    it('совпадения по началу фамилии идут первыми', async () => {
+      const lastNames = (await realAuthors()).map((item) => item.name.split(' ')[0]!.toUpperCase());
+
+      // Фрагмент, который есть и в начале одной фамилии, и в середине другой: иначе
+      // проверять нечего — порядок был бы верным при любой реализации.
+      const fragment = lastNames
+        .map((name) => name.slice(0, 2))
+        .find(
+          (part) =>
+            lastNames.some((name) => name.startsWith(part)) &&
+            lastNames.some((name) => !name.startsWith(part) && name.includes(part)),
+        );
+      expect(fragment).toBeDefined();
+
+      const found = (await get(`/authors?q=${encodeURIComponent(fragment!)}&limit=200`)).json<{
+        items: Array<{ name: string }>;
+      }>();
+      const byPrefix = found.items.map((item) =>
+        item.name.toUpperCase().startsWith(fragment!.toUpperCase()),
+      );
+
+      expect(byPrefix).toContain(true);
+      expect(byPrefix).toContain(false);
+      // Ни одного совпадения по началу после совпадения по середине.
+      expect(byPrefix.slice(byPrefix.indexOf(false))).not.toContain(true);
     });
 
     it('не даёт спецсимволам LIKE утечь во фильтр', async () => {
