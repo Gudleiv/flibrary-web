@@ -7,19 +7,31 @@ import type { Genre } from '@flibrary/contract';
 import type { FastifyPluginAsync } from 'fastify';
 
 import { COLLECTION as C } from '../db/index.js';
-import { GENRE_LABEL } from '../db/labels.js';
+import { displayAuthorName, GENRE_LABEL } from '../db/labels.js';
 
 interface GenreRow {
   code: string;
   parentCode: string | null;
   title: string | null;
   books: number;
+  ownBooks: number;
 }
+
+const authorsSchema = {
+  type: 'object',
+  properties: {
+    q: { type: 'string', maxLength: 128 },
+    limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+    offset: { type: 'integer', minimum: 0, maximum: 5_000_000, default: 0 },
+  },
+} as const;
 
 const catalogRoutes: FastifyPluginAsync = async (fastify) => {
   const { db, config } = fastify;
 
   const visible = config.hideDeleted ? 'WHERE b.IsDeleted = 0' : '';
+  /** То же условие, но довеском к уже существующему ON/WHERE. */
+  const visibleBook = config.hideDeleted ? 'AND b.IsDeleted = 0' : '';
 
   fastify.get('/collection', async () => {
     const counts = db.read
@@ -39,6 +51,23 @@ const catalogRoutes: FastifyPluginAsync = async (fastify) => {
         .all() as Array<{ code: string }>
     ).map((row) => row.code);
 
+    const years = db.read
+      .prepare(
+        // Year в коллекции бывает нулевым и заведомо мусорным (0, 1, 9999) — такое
+        // в границы фильтра пускать нельзя, иначе ползунок растянется на всю ось.
+        `SELECT min(b.Year) AS yearMin, max(b.Year) AS yearMax
+           FROM ${C}.Books_View b
+          WHERE b.Year BETWEEN 1400 AND 2200 ${config.hideDeleted ? 'AND b.IsDeleted = 0' : ''}`,
+      )
+      .get() as { yearMin: number | null; yearMax: number | null };
+
+    // Аннотации в коллекции опциональны: inpx импортируют и без них. Ноль здесь —
+    // не ошибка, а то, что клиенту нужно знать, чтобы не выдавать «у книги нет
+    // аннотации» на каждой книге и не показывать поиск по аннотации как рабочий.
+    const { annotations } = db.read
+      .prepare(`SELECT count(*) AS annotations FROM ${C}.Annotations`)
+      .get() as { annotations: number };
+
     const indexState = db.read
       .prepare('SELECT indexed_at AS indexedAt FROM index_state WHERE id = 1')
       .get() as { indexedAt: string | null } | undefined;
@@ -51,6 +80,9 @@ const catalogRoutes: FastifyPluginAsync = async (fastify) => {
       authors: counts.authors,
       series: counts.series,
       languages,
+      yearMin: years.yearMin,
+      yearMax: years.yearMax,
+      annotations,
       indexedAt: indexState?.indexedAt ?? null,
     };
   });
@@ -58,15 +90,41 @@ const catalogRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/genres', async () => {
     const rows = db.read
       .prepare(
+        // Счётчик считается ПО ПОДДЕРЕВУ. Книге проставляют листовые жанры («Киберпанк»),
+        // а не корневые («Фантастика»), поэтому подсчёт по прямым связям давал у всех
+        // корней ноль — жанр с тысячей книг выглядел пустым.
+        //
+        // Рекурсивный CTE разворачивает дерево в пары «корень поддерева → потомок»;
+        // справочник жанров — сотни строк, так что разворот дешёвый.
+        //
+        // count(DISTINCT) обязателен: книге ставят несколько жанров, и у книги с
+        // «Киберпанком» и «Фэнтези» корень «Фантастика» иначе посчитался бы дважды.
+        //
         // ParentCode у корневых жанров — пустая строка, а не NULL; наружу «родителя нет»
         // отдаём как null, иначе клиенту пришлось бы знать про эту особенность.
-        `SELECT g.GenreCode AS code, nullif(g.ParentCode, '') AS parentCode,
+        `WITH RECURSIVE subtree (root, code) AS (
+             SELECT GenreCode, GenreCode FROM ${C}.Genres WHERE IsDeleted = 0
+           UNION ALL
+             SELECT s.root, g.GenreCode
+               FROM ${C}.Genres g
+               JOIN subtree s ON g.ParentCode = s.code
+              WHERE g.IsDeleted = 0
+         ),
+         counts AS (
+           SELECT s.root AS code,
+                  count(DISTINCT gl.BookID)                                    AS books,
+                  count(DISTINCT CASE WHEN s.root = s.code THEN gl.BookID END) AS ownBooks
+             FROM subtree s
+             JOIN ${C}.Genre_List gl ON gl.GenreCode = s.code
+             JOIN ${C}.Books_View b ON b.BookID = gl.BookID ${visibleBook}
+            GROUP BY s.root
+         )
+         SELECT g.GenreCode AS code, nullif(g.ParentCode, '') AS parentCode,
                 ${GENRE_LABEL} AS title,
-                (SELECT count(*) FROM ${C}.Genre_List gl
-                   JOIN ${C}.Books_View b ON b.BookID = gl.BookID
-                  WHERE gl.GenreCode = g.GenreCode
-                    ${config.hideDeleted ? 'AND b.IsDeleted = 0' : ''}) AS books
+                coalesce(c.books, 0)    AS books,
+                coalesce(c.ownBooks, 0) AS ownBooks
            FROM ${C}.Genres g
+           LEFT JOIN counts c ON c.code = g.GenreCode
           WHERE g.IsDeleted = 0
           ORDER BY ${GENRE_LABEL}`,
       )
@@ -74,6 +132,69 @@ const catalogRoutes: FastifyPluginAsync = async (fastify) => {
 
     return { items: buildGenreTree(rows) };
   });
+
+  /**
+   * Алфавитный список авторов для раздела «Авторы».
+   *
+   * Не то же самое, что `/search/suggest?kind=author`: там топ-N по числу книг для
+   * автодополнения, здесь — страница списка и общее число, по которому рисуется пагинация.
+   */
+  fastify.get<{ Querystring: { q?: string; limit?: number; offset?: number } }>(
+    '/authors',
+    { schema: { querystring: authorsSchema } },
+    async (request) => {
+      const { q } = request.query;
+      const limit = request.query.limit ?? 50;
+      const offset = request.query.offset ?? 0;
+
+      // SearchName в коллекции — uppercase (как и SearchTitle), по нему и ищем префиксом.
+      // Спецсимволы LIKE экранируем: '%' во вводе иначе означал бы «любой остаток».
+      const filter =
+        q === undefined || q.trim() === ''
+          ? null
+          : `${q
+              .trim()
+              .toUpperCase()
+              .replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+
+      const where = [
+        // Справочник авторов коллекции содержит записи, не связанные ни с одной книгой:
+        // в списке они выглядели бы как авторы без единой книги.
+        `EXISTS (SELECT 1 FROM ${C}.Author_List al2 WHERE al2.AuthorID = a.AuthorID)`,
+        filter === null ? null : "a.SearchName LIKE :filter ESCAPE '\\'",
+      ]
+        .filter((part) => part !== null)
+        .join(' AND ');
+
+      const { total } = db.read
+        .prepare(`SELECT count(*) AS total FROM ${C}.Authors a WHERE ${where}`)
+        .get({ filter }) as { total: number };
+
+      const rows = db.read
+        .prepare(
+          `SELECT a.AuthorID AS authorId,
+                  trim(coalesce(a.LastName, '') || ' ' || coalesce(a.FirstName, '')
+                       || ' ' || coalesce(a.MiddleName, '')) AS name,
+                  (SELECT count(*) FROM ${C}.Author_List al
+                     JOIN ${C}.Books_View b ON b.BookID = al.BookID ${visibleBook}
+                    WHERE al.AuthorID = a.AuthorID) AS books
+             FROM ${C}.Authors a
+            WHERE ${where}
+            ORDER BY a.SearchName, a.AuthorID
+            LIMIT :limit OFFSET :offset`,
+        )
+        .all({ filter, limit, offset }) as Array<{
+        authorId: number;
+        name: string;
+        books: number;
+      }>;
+
+      return {
+        items: rows.map((row) => ({ ...row, name: displayAuthorName(row.name) })),
+        total,
+      };
+    },
+  );
 
   fastify.get('/languages', async () => {
     const rows = db.read
@@ -100,6 +221,7 @@ export function buildGenreTree(rows: GenreRow[]): Genre[] {
         parentCode: row.parentCode,
         title: row.title ?? row.code,
         books: row.books,
+        ownBooks: row.ownBooks,
         children: [],
       },
     ]),

@@ -105,9 +105,9 @@ describe('displayAuthorName', () => {
 describe('buildGenreTree', () => {
   it('собирает дерево по ParentCode', () => {
     const tree = buildGenreTree([
-      { code: 'sf', parentCode: null, title: 'Фантастика', books: 10 },
-      { code: 'sf_space', parentCode: 'sf', title: 'Космическая', books: 4 },
-      { code: 'sf_cyber', parentCode: 'sf', title: 'Киберпанк', books: 6 },
+      { code: 'sf', parentCode: null, title: 'Фантастика', books: 10, ownBooks: 0 },
+      { code: 'sf_space', parentCode: 'sf', title: 'Космическая', books: 4, ownBooks: 4 },
+      { code: 'sf_cyber', parentCode: 'sf', title: 'Киберпанк', books: 6, ownBooks: 6 },
     ]);
 
     expect(tree).toHaveLength(1);
@@ -117,7 +117,7 @@ describe('buildGenreTree', () => {
 
   it('поднимает сироту в корень, а не теряет её', () => {
     const tree = buildGenreTree([
-      { code: 'orphan', parentCode: 'missing', title: 'Сирота', books: 1 },
+      { code: 'orphan', parentCode: 'missing', title: 'Сирота', books: 1, ownBooks: 1 },
     ]);
 
     expect(tree.map((node) => node.code)).toEqual(['orphan']);

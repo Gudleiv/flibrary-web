@@ -253,6 +253,41 @@ paths:
                     items: { $ref: '#/components/schemas/Genre' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /authors:
+    get:
+      tags: [catalog]
+      summary: Алфавитный список авторов
+      description: |
+        Для раздела «Авторы»: список с листанием, а не подсказки. За подсказками —
+        `GET /search/suggest?kind=author`: там топ-N по числу книг и без общего числа.
+      parameters:
+        - name: q
+          in: query
+          description: Префикс имени; ищется по нормализованному `SearchName` коллекции.
+          schema: { type: string, maxLength: 128 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 5000000, default: 0 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuthorCount' }
+                  total:
+                    type: integer
+                    description: Сколько всего авторов подходит под фильтр.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /languages:
     get:
       tags: [catalog]
@@ -637,7 +672,15 @@ components:
         code: { type: string }
         parentCode: { type: [string, 'null'] }
         title: { type: string }
-        books: { type: integer }
+        books:
+          type: integer
+          description: >-
+            Книг в жанре ВМЕСТЕ С ПОДЖАНРАМИ, без повторов. Книге проставляют листовые
+            жанры, поэтому у корневого жанра число прямых связей почти всегда 0, и
+            показывать пользователю нужно именно эту цифру.
+        ownBooks:
+          type: integer
+          description: Книг, которым проставлен ровно этот жанр, без поджанров.
         children:
           type: array
           items: { $ref: '#/components/schemas/Genre' }
@@ -647,6 +690,14 @@ components:
       required: [code, books]
       properties:
         code: { type: string }
+        books: { type: integer }
+
+    AuthorCount:
+      type: object
+      required: [authorId, name, books]
+      properties:
+        authorId: { type: integer }
+        name: { type: string }
         books: { type: integer }
 
     Facet:
@@ -689,6 +740,18 @@ components:
         languages:
           type: array
           items: { type: string }
+        yearMin:
+          type: [integer, 'null']
+          description: Самый ранний год издания в коллекции — границы для фильтра по годам.
+        yearMax:
+          type: [integer, 'null']
+        annotations:
+          type: integer
+          description: >-
+            Сколько книг в коллекции имеют аннотацию. Ноль — это нормальное состояние:
+            inpx импортируют и без аннотаций (флаг LoadAnnotations у FLibrary). Клиенту
+            это нужно, чтобы отличать «у книги нет аннотации» от «в коллекции их нет
+            ни у кого» — иначе поиск по аннотации выглядит сломанным.
         indexedAt:
           type: [string, 'null']
           format: date-time
