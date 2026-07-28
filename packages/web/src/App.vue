@@ -7,8 +7,10 @@ import Toast from 'primevue/toast';
 import type { MenuItem } from 'primevue/menuitem';
 
 import { useAuthStore } from '@/stores/auth';
+import { useTheme } from '@/lib/theme';
 
 const auth = useAuthStore();
+const { theme, toggle: toggleTheme } = useTheme();
 const router = useRouter();
 const route = useRoute();
 
@@ -24,10 +26,6 @@ const sections: MenuItem[] = [
 async function onLogout(): Promise<void> {
   await auth.logout();
   await router.push({ name: 'login' });
-}
-
-function toggleDark(): void {
-  document.documentElement.classList.toggle('dark');
 }
 </script>
 
@@ -56,7 +54,13 @@ function toggleDark(): void {
       </template>
       <template #end>
         <div class="row">
-          <Button text rounded icon="pi pi-moon" aria-label="Тема" @click="toggleDark" />
+          <Button
+            text
+            rounded
+            :icon="theme === 'dark' ? 'pi pi-sun' : 'pi pi-moon'"
+            :aria-label="theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'"
+            @click="toggleTheme"
+          />
           <span v-if="auth.user" class="muted">{{ auth.user.displayName }}</span>
           <Button text icon="pi pi-sign-out" label="Выйти" @click="onLogout" />
         </div>

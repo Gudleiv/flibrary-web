@@ -7,6 +7,7 @@ import { formatSize } from '../src/lib/format';
 import { compareByLanguageName, languageName } from '../src/lib/lang';
 import { fromSelection, toSelection } from '../src/lib/genres';
 import { createSlots } from '../src/lib/slots';
+import { resolveTheme } from '../src/lib/theme';
 
 describe('размер книги', () => {
   it('растёт по единицам, а не считает всё в килобайтах', () => {
@@ -133,5 +134,23 @@ describe('очередь одновременных задач', () => {
 
     expect(log).toEqual(['a']);
     expect(slots.busy).toBe(0);
+  });
+});
+
+describe('выбор темы', () => {
+  it('без выбора пользователя тему диктует система', () => {
+    expect(resolveTheme(null, true)).toBe('dark');
+    expect(resolveTheme(null, false)).toBe('light');
+  });
+
+  it('выбор пользователя главнее системной настройки', () => {
+    expect(resolveTheme('light', true)).toBe('light');
+    expect(resolveTheme('dark', false)).toBe('dark');
+  });
+
+  it('мусор в хранилище — это отсутствие выбора, а не поломка темы', () => {
+    // localStorage правит кто угодно, включая соседнюю вкладку и консоль.
+    expect(resolveTheme('', true)).toBe('dark');
+    expect(resolveTheme('DARK', false)).toBe('light');
   });
 });
