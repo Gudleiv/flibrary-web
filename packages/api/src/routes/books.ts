@@ -27,6 +27,8 @@ interface DetailRow extends BookRow {
   archive: string | null;
   fileName: string | null;
   updateDate: string | null;
+  sourceLib: string | null;
+  libId: string | null;
   isDeleted: number;
 }
 
@@ -53,6 +55,8 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
              b.IsDeleted   AS isDeleted,
              b.UpdateDate  AS updateDate,
              b.FileName    AS fileName,
+             b.SourceLib   AS sourceLib,
+             b.LibID       AS libId,
              f.FolderTitle AS archive,
              s.SeriesID    AS seriesId,
              s.SeriesTitle AS seriesTitle,
@@ -90,6 +94,8 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
         archive: row.archive,
         fileName: row.fileName,
         updateDate: row.updateDate,
+        sourceLib: row.sourceLib,
+        libId: row.libId,
         // Исходный формат всегда доступен; epub/mobi зависят от конвертеров,
         // настроенных в FLibrary, — их список отдаёт /collection.
         formats: [row.ext?.replace(/^\./, '') ?? 'fb2', 'zip'],

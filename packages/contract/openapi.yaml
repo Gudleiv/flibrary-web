@@ -632,6 +632,12 @@ components:
             archive: { type: [string, 'null'] }
             fileName: { type: [string, 'null'] }
             updateDate: { type: [string, 'null'] }
+            sourceLib:
+              type: [string, 'null']
+              description: Библиотека-источник записи (`Books.SourceLib`).
+            libId:
+              type: [string, 'null']
+              description: Идентификатор книги в библиотеке-источнике (`Books.LibID`).
             formats:
               description: Форматы, в которых книгу можно скачать.
               type: array

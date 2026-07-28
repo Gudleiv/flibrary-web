@@ -123,6 +123,22 @@ body {
   flex-wrap: wrap;
 }
 
+/* Ссылки в метаданных книги: браузерный синий с подчёркиванием выбивается из темы
+   и в тёмном оформлении почти не читается. */
+.meta a {
+  color: var(--p-primary-color);
+  text-decoration: none;
+}
+
+.meta a:hover {
+  text-decoration: underline;
+}
+
+/* Кнопка в колоночном стеке иначе растягивается на всю ширину и уезжает в центр. */
+.self-start {
+  align-self: flex-start;
+}
+
 /* Боковое меню разделов: авторы, жанры, языки. */
 .side-list {
   display: flex;
