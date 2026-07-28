@@ -5,6 +5,10 @@
 // показываются здесь же и снимаются повторным щелчком. Сервер закрепляет выбранные
 // значения в начале списка, так что снять фильтр можно всегда, даже если у автора
 // одна книга и в топ-20 по количеству он бы не попал.
+//
+// Выбранное значение остаётся в списке и когда под него не попало ни одной книги —
+// со счётчиком 0. Уточнения не сбрасываются при новом поиске, и без этого выбранный
+// автор пропадал бы из панели ровно тогда, когда выдача из-за него и опустела.
 
 import { computed, ref } from 'vue';
 import Button from 'primevue/button';
@@ -75,7 +79,10 @@ const isSelected = (field: FacetField, value: string): boolean =>
         :key="item.value"
         type="button"
         class="facet-value"
-        :class="{ 'facet-value--on': isSelected(section.field, item.value) }"
+        :class="{
+          'facet-value--on': isSelected(section.field, item.value),
+          'facet-value--empty': item.count === 0,
+        }"
         :aria-pressed="isSelected(section.field, item.value)"
         @click="emit('toggle', section.field, item.value)"
       >
@@ -133,6 +140,12 @@ const isSelected = (field: FacetField, value: string): boolean =>
 .facet-value--on {
   background: var(--p-highlight-background);
   color: var(--p-highlight-color);
+}
+
+/* Ноль в счётчике — это «под текущий запрос не подошло ничего»; значение
+   остаётся кликабельным, потому что щелчок по нему как раз и снимает фильтр. */
+.facet-value--empty {
+  opacity: 0.65;
 }
 
 .facet-value__label {
