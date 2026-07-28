@@ -34,10 +34,13 @@ describeIfFixtures('бинарные ручки поверх content-service', (
   let stub: Server;
   let cookie: string;
   let appDb: string;
+  let cacheDir: string;
   let bookId: number;
   const requests: StubRequest[] = [];
   /** Имя файла, которое «C++-сервер» кладёт в content-disposition. */
   let stubFilename = 'book.fb2';
+  /** Тело fb2, которое отдаёт заглушка: тестам разбора нужен не пустой файл. */
+  let stubFb2 = '<?xml version="1.0"?><FictionBook/>';
 
   beforeAll(async () => {
     stub = createServer((request, response) => {
@@ -53,18 +56,23 @@ describeIfFixtures('бинарные ручки поверх content-service', (
         'content-type': zip ? 'application/zip' : 'application/fb2',
         'content-disposition': `attachment; filename="${stubFilename}${zip ? '.zip' : ''}"`,
       });
-      response.end(zip ? 'PKzip' : '<?xml version="1.0"?><FictionBook/>');
+      response.end(zip ? 'PKzip' : stubFb2);
     });
     await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
     const port = (stub.address() as { port: number }).port;
 
     appDb = join(tmpdir(), `flw-content-${process.pid}.db`);
+    cacheDir = join(tmpdir(), `flw-content-cache-${process.pid}`);
+    // Кэш обязательно чистим и до, и после: он переживает процесс, а имя привязано к
+    // pid, который система переиспользует. Разбор чужого прогона выглядел бы как
+    // сломанный разбор этого.
     rmSync(appDb, { force: true });
+    rmSync(cacheDir, { force: true, recursive: true });
 
     Object.assign(process.env, {
       COLLECTION_DB: collectionDb,
       APP_DB: appDb,
-      CACHE_DIR: join(tmpdir(), `flw-content-cache-${process.pid}`),
+      CACHE_DIR: cacheDir,
       CONTENT_SERVICE_URL: `http://127.0.0.1:${port}`,
       SESSION_SECRET: 'test-secret',
       LOG_LEVEL: 'silent',
@@ -90,6 +98,7 @@ describeIfFixtures('бинарные ручки поверх content-service', (
     await fastify?.close();
     await new Promise<void>((resolve) => stub.close(() => resolve()));
     rmSync(appDb, { force: true });
+    rmSync(cacheDir, { force: true, recursive: true });
   });
 
   const download = (query: string) =>
@@ -191,6 +200,68 @@ describeIfFixtures('бинарные ручки поверх content-service', (
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  describe('сведения из файла книги', () => {
+    const details = () =>
+      fastify.inject({
+        method: 'GET',
+        url: `/api/v1/books/${bookId}/details`,
+        headers: { cookie },
+      });
+
+    it('разбирает fb2 из content-service и кэширует разбор', async () => {
+      stubFb2 = `<?xml version="1.0" encoding="utf-8"?>
+        <FictionBook>
+          <description>
+            <title-info><src-lang>en</src-lang></title-info>
+            <publish-info><publisher>Азбука</publisher><year>2015</year></publish-info>
+          </description>
+          <body><section><title><p>Пролог</p></title><p>Текст книги.</p></section></body>
+        </FictionBook>`;
+
+      requests.length = 0;
+      const first = await details();
+
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toMatchObject({
+        publisher: 'Азбука',
+        publishYear: 2015,
+        srcLang: 'en',
+        chapters: ['Пролог'],
+      });
+      // Нужен распакованный XML, а не архив: значит /Images/fb2, а не /Images/zip.
+      expect(requests.map((request) => request.path)).toEqual([`/Images/fb2/${bookId}`]);
+
+      // Повтор не должен снова дёргать content-service: вытащить файл книги ради
+      // издателя дорого, а очередь у C++-сервера размером с число ядер.
+      requests.length = 0;
+      const second = await details();
+
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toEqual(first.json());
+      expect(requests).toHaveLength(0);
+    });
+
+    it('несуществующая книга — 404, а не поход за файлом', async () => {
+      requests.length = 0;
+      const response = await fastify.inject({
+        method: 'GET',
+        url: '/api/v1/books/999999999/details',
+        headers: { cookie },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(requests).toHaveLength(0);
+    });
+
+    it('закрыт без аутентификации', async () => {
+      const response = await fastify.inject({
+        method: 'GET',
+        url: `/api/v1/books/${bookId}/details`,
+      });
+      expect(response.statusCode).toBe(401);
+    });
   });
 
   // Последним: закрываем заглушку и проверяем, что недоступный content-service — это 502

@@ -20,6 +20,7 @@ import { buildFb2, SAMPLE_COVER_JPEG_BASE64, type Fb2Book } from './fb2.js';
 import {
   ADJECTIVES,
   ANNOTATION_SENTENCES,
+  CHAPTER_TITLES,
   FEMALE_FIRST_NAMES,
   FEMALE_MIDDLE_NAMES,
   GENITIVES,
@@ -30,6 +31,8 @@ import {
   MALE_FIRST_NAMES,
   MALE_MIDDLE_NAMES,
   NOUNS,
+  PUBLISHER_CITIES,
+  PUBLISHERS,
   SERIES_PATTERNS,
   TITLE_PATTERNS,
   VERBS,
@@ -388,6 +391,25 @@ function fb2For(book: Book): string {
             seqNumber: book.seqNumber,
           },
     keywords: book.keywordIds.map((keywordId) => keywordsById.get(keywordId)?.title ?? ''),
+    // Язык оригинала и переводчики — только у части книг, как в жизни: разбор fb2
+    // должен одинаково справляться и с ними, и без них.
+    srcLang: book.lang !== 'ru' || !rng.bool(0.25) ? null : 'en',
+    translators:
+      book.lang === 'ru' && rng.bool(0.25)
+        ? [{ firstName: rng.pick(MALE_FIRST_NAMES), lastName: rng.pick(LAST_NAMES) }]
+        : [],
+    publisher: rng.bool(0.7)
+      ? {
+          name: rng.pick(PUBLISHERS),
+          city: rng.pick(PUBLISHER_CITIES),
+          year: book.year ?? 2000,
+          isbn: `978-5-${rng.int(1000, 9999)}-${rng.int(1000, 9999)}-${rng.int(0, 9)}`,
+        }
+      : null,
+    chapters: Array.from({ length: rng.int(2, 5) }, (_, index) => ({
+      title: CHAPTER_TITLES[index % CHAPTER_TITLES.length] ?? `Глава ${index + 1}`,
+      paragraphs: Array.from({ length: rng.int(3, 8) }, () => makeAnnotation()),
+    })),
     paragraphs: Array.from({ length: rng.int(6, 18) }, () => makeAnnotation()),
     cover: book.hasCover
       ? { fileName: 'cover.jpg', contentType: 'image/jpeg', base64: SAMPLE_COVER_JPEG_BASE64 }

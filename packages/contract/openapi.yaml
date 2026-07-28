@@ -169,6 +169,31 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /books/{bookId}/details:
+    get:
+      tags: [books]
+      summary: Сведения из самого файла книги
+      description: |
+        Издателя, язык оригинала, переводчиков, содержание и объём текста коллекционная
+        БД не хранит — inpx их не переносит. Всё это лежит в самом fb2, поэтому ручка
+        тянет файл через внутренний C++-сервер, разбирает `<description>` и текст и
+        кэширует разбор на диске.
+
+        Отдельная операция, а не часть `GET /books/{bookId}`: карточка книги не должна
+        ждать распаковки архива, а без content-service эти данные недоступны вовсе —
+        тогда ответ 502, и карточка живёт без них.
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookFileDetails' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+
   /books/{bookId}/cover:
     get:
       tags: [books]
@@ -646,6 +671,40 @@ components:
               description: Соседние книги серии для навигации.
               type: array
               items: { $ref: '#/components/schemas/BookListItem' }
+
+    BookFileDetails:
+      description: Разбор самого файла книги — то, чего нет в коллекционной БД.
+      type: object
+      required: [chapters, translators, letters, words, pages]
+      properties:
+        annotation:
+          type: [string, 'null']
+          description: >-
+            Аннотация из файла. Нужна как запасной вариант: таблицу Annotations
+            заполняет inpx, и только если коллекцию импортировали с этим флагом.
+        publisher: { type: [string, 'null'] }
+        publishYear: { type: [integer, 'null'] }
+        publishCity: { type: [string, 'null'] }
+        isbn: { type: [string, 'null'] }
+        srcLang:
+          type: [string, 'null']
+          description: Язык оригинала; есть только у переводных книг.
+        translators:
+          type: array
+          items: { type: string }
+        chapters:
+          description: Заголовки секций верхнего уровня — «Содержание».
+          type: array
+          items: { type: string }
+        letters:
+          type: integer
+          description: Символов в тексте книги, без разметки.
+        words: { type: integer }
+        pages:
+          type: integer
+          description: >-
+            Страниц примерно: символы, делённые на 2000, — та же формула, что у
+            десктопного FLibrary, чтобы цифры сходились.
 
     AuthorRef:
       type: object

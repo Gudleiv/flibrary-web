@@ -8,11 +8,11 @@ import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 
-import { downloadBook, getBook, getCollection } from '@/api/client';
+import { downloadBook, getBook, getBookDetails, getCollection } from '@/api/client';
 import BookCover from '@/components/BookCover.vue';
 import FlagIcon from '@/components/FlagIcon.vue';
 import MetaRow from '@/components/MetaRow.vue';
-import { formatDate, formatSize } from '@/lib/format';
+import { formatCount, formatDate, formatSize } from '@/lib/format';
 import { languageName } from '@/lib/lang';
 
 const route = useRoute();
@@ -31,7 +31,35 @@ const collection = useQuery({
   staleTime: 10 * 60_000,
 });
 
+/**
+ * Издатель, язык оригинала, переводчики, содержание и объём текста лежат не в
+ * коллекции, а в самом файле книги, поэтому приходят своим запросом и своим темпом.
+ *
+ * Ошибку показывать не нужно и повторять запрос тоже: без внутреннего C++-сервера
+ * ручка всегда отдаёт 502 (в облачной сессии — всегда), и это не поломка карточки,
+ * а отсутствие необязательных полей.
+ */
+const fileDetails = useQuery({
+  queryKey: computed(() => ['book-details', bookId.value]),
+  queryFn: () => getBookDetails(bookId.value),
+  retry: false,
+  staleTime: Infinity,
+});
+
 const data = computed(() => book.data.value);
+const file = computed(() => (fileDetails.isError.value ? undefined : fileDetails.data.value));
+
+/** Объём текста — как его показывает FLibrary: «букв ≈ страниц, слов». */
+const textSize = computed(() => {
+  const details = file.value;
+  if (details === undefined || details.letters === 0) return null;
+  return `${formatCount(details.letters)} букв ≈ ${formatCount(details.pages)} стр., ${formatCount(
+    details.words,
+  )} слов`;
+});
+
+/** Аннотация из файла — запасной вариант: в коллекции её может не быть вовсе. */
+const annotation = computed(() => data.value?.annotation ?? file.value?.annotation ?? null);
 
 /** Книга без названия — не редкость в коллекции; показываем идентификатор, а не пустоту. */
 const title = computed(() => {
@@ -172,6 +200,33 @@ async function download(format: string): Promise<void> {
                 </RouterLink>
               </MetaRow>
 
+              <!-- Дальше — то, чего в коллекционной БД нет: это разбор самого файла
+                   книги, и он приходит своим запросом. Полей может не быть вовсе. -->
+              <MetaRow v-if="file?.srcLang" label="Язык оригинала">
+                <RouterLink
+                  class="row"
+                  style="gap: 0.4rem"
+                  :to="{ name: 'languages', params: { code: file.srcLang } }"
+                >
+                  <FlagIcon :code="file.srcLang" :width="18" />
+                  {{ languageName(file.srcLang) }}
+                </RouterLink>
+              </MetaRow>
+
+              <MetaRow v-if="file?.translators?.length" label="Перевод">
+                {{ file.translators.join(', ') }}
+              </MetaRow>
+
+              <MetaRow v-if="file?.publisher" label="Издатель">
+                {{ file.publisher }}
+                <span v-if="file.publishCity" class="muted">{{ file.publishCity }}</span>
+                <span v-if="file.publishYear" class="muted">{{ file.publishYear }}</span>
+              </MetaRow>
+
+              <MetaRow v-if="file?.isbn" label="ISBN">{{ file.isbn }}</MetaRow>
+
+              <MetaRow v-if="textSize" label="Объём текста">{{ textSize }}</MetaRow>
+
               <MetaRow v-if="data.ext" label="Формат">
                 <RouterLink :to="{ name: 'search', query: { ext: data.ext } }">
                   {{ data.ext }}
@@ -207,9 +262,10 @@ async function download(format: string): Promise<void> {
 
             <section class="stack" style="gap: 0.35rem">
               <h3 style="margin: 0; font-size: 1rem">Аннотация</h3>
-              <p v-if="data.annotation" style="margin: 0; white-space: pre-line">
-                {{ data.annotation }}
-              </p>
+              <p v-if="annotation" style="margin: 0; white-space: pre-line">{{ annotation }}</p>
+              <!-- Пока файл книги не разобран, «аннотации нет» говорить рано: она может
+                   найтись в нём даже там, где в коллекции её не было. -->
+              <span v-else-if="fileDetails.isLoading.value" class="muted">Читаем файл книги…</span>
               <!-- Разные вещи: у книги нет аннотации / коллекция собрана без аннотаций.
                    Вторая заодно объясняет, почему поиск по аннотации ничего не находит. -->
               <span v-else-if="noAnnotationsAtAll" class="muted">
@@ -217,6 +273,17 @@ async function download(format: string): Promise<void> {
                 аннотации в ней ничего не найдёт.
               </span>
               <span v-else class="muted">У этой книги аннотации нет.</span>
+            </section>
+
+            <!-- Содержание — как в десктопном FLibrary. Заголовки берутся из файла, так
+                 что без внутреннего C++-сервера раздела просто не будет. -->
+            <section v-if="file?.chapters?.length" class="stack" style="gap: 0.35rem">
+              <h3 style="margin: 0; font-size: 1rem">Содержание</h3>
+              <ol class="chapters">
+                <li v-for="(chapter, index) in file.chapters" :key="`${index}-${chapter}`">
+                  {{ chapter }}
+                </li>
+              </ol>
             </section>
           </div>
         </div>
@@ -228,5 +295,14 @@ async function download(format: string): Promise<void> {
 <style scoped>
 .meta {
   margin: 0;
+}
+
+.chapters {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.chapters li {
+  padding: 0.1rem 0;
 }
 </style>

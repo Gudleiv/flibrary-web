@@ -68,6 +68,16 @@ export async function getBook(bookId: number): Promise<BookDetail> {
   return unwrap(await api.GET('/books/{bookId}', { params: { path: { bookId } } })) as BookDetail;
 }
 
+/**
+ * Сведения из самого файла книги: издатель, содержание, объём текста.
+ *
+ * Отдельно от карточки, потому что за ними стоит распаковка архива внутренним
+ * C++-сервером: без него ручка отдаёт 502, и это штатно — карточка живёт без них.
+ */
+export async function getBookDetails(bookId: number) {
+  return unwrap(await api.GET('/books/{bookId}/details', { params: { path: { bookId } } }));
+}
+
 export async function getCollection() {
   return unwrap(await api.GET('/collection'));
 }

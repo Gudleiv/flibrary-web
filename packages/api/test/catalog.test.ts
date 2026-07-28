@@ -21,15 +21,18 @@ describeIfFixtures('справочники', () => {
   let fastify: FastifyInstance;
   let cookie: string;
   let appDb: string;
+  let cacheDir: string;
 
   beforeAll(async () => {
     appDb = join(tmpdir(), `flw-catalog-${process.pid}.db`);
+    cacheDir = join(tmpdir(), `flw-catalog-cache-${process.pid}`);
     rmSync(appDb, { force: true });
+    rmSync(cacheDir, { force: true, recursive: true });
 
     Object.assign(process.env, {
       COLLECTION_DB: collectionDb,
       APP_DB: appDb,
-      CACHE_DIR: join(tmpdir(), `flw-catalog-cache-${process.pid}`),
+      CACHE_DIR: cacheDir,
       SESSION_SECRET: 'test-secret',
       LOG_LEVEL: 'silent',
     });
@@ -49,6 +52,7 @@ describeIfFixtures('справочники', () => {
   afterAll(async () => {
     await fastify.close();
     for (const suffix of ['', '-wal', '-shm']) rmSync(`${appDb}${suffix}`, { force: true });
+    rmSync(cacheDir, { force: true, recursive: true });
   });
 
   const get = (url: string): Promise<LightMyRequestResponse> =>

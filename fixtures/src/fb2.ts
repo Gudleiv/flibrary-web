@@ -12,6 +12,12 @@ export interface Fb2Book {
   annotation: string | null;
   series: { title: string; seqNumber: number | null } | null;
   keywords: string[];
+  /** Есть только у переводных книг — как в настоящих fb2. */
+  srcLang: string | null;
+  translators: Array<{ firstName: string; lastName: string }>;
+  publisher: { name: string; city: string; year: number; isbn: string } | null;
+  /** Главы: заголовок и абзацы. Пустой список — книга одной секцией без заголовка. */
+  chapters: Array<{ title: string; paragraphs: string[] }>;
   paragraphs: string[];
   cover: { fileName: string; contentType: string; base64: string } | null;
 }
@@ -56,9 +62,44 @@ export function buildFb2(book: Fb2Book): string {
       )}">${book.cover.base64}</binary>\n`
     : '';
 
-  const body = book.paragraphs
-    .map((paragraph) => `      <p>${escapeXml(paragraph)}</p>`)
+  const srcLang = book.srcLang ? `      <src-lang>${escapeXml(book.srcLang)}</src-lang>\n` : '';
+
+  const translators = book.translators
+    .map(
+      (person) => `      <translator>
+        <first-name>${escapeXml(person.firstName)}</first-name>
+        <last-name>${escapeXml(person.lastName)}</last-name>
+      </translator>`,
+    )
     .join('\n');
+
+  // publish-info описывает бумажное издание: издателя, город, год и ISBN в коллекционную
+  // БД не попадают вовсе, поэтому в фикстурах они нужны — иначе нечем проверять разбор.
+  const publishInfo = book.publisher
+    ? `    <publish-info>
+      <publisher>${escapeXml(book.publisher.name)}</publisher>
+      <city>${escapeXml(book.publisher.city)}</city>
+      <year>${book.publisher.year}</year>
+      <isbn>${escapeXml(book.publisher.isbn)}</isbn>
+    </publish-info>\n`
+    : '';
+
+  const paragraphs = (items: string[]): string =>
+    items.map((paragraph) => `        <p>${escapeXml(paragraph)}</p>`).join('\n');
+
+  const body =
+    book.chapters.length > 0
+      ? book.chapters
+          .map(
+            (chapter) => `    <section>
+      <title><p>${escapeXml(chapter.title)}</p></title>
+${paragraphs(chapter.paragraphs)}
+    </section>`,
+          )
+          .join('\n')
+      : `    <section>
+${paragraphs(book.paragraphs)}
+    </section>`;
 
   return `<?xml version="1.0" encoding="utf-8"?>
 <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
@@ -68,17 +109,15 @@ ${genres}
 ${authors}
       <book-title>${escapeXml(book.title)}</book-title>
 ${annotation}${keywords}${coverPage}      <lang>${escapeXml(book.lang)}</lang>
-${sequence}${book.year === null ? '' : `      <date value="${book.year}-01-01">${book.year}</date>\n`}    </title-info>
-    <document-info>
+${sequence}${srcLang}${translators}${translators === '' ? '' : '\n'}${book.year === null ? '' : `      <date value="${book.year}-01-01">${book.year}</date>\n`}    </title-info>
+${publishInfo}    <document-info>
       <program-used>flibrary-web fixtures</program-used>
       <version>1.0</version>
     </document-info>
   </description>
   <body>
     <title><p>${escapeXml(book.title)}</p></title>
-    <section>
 ${body}
-    </section>
   </body>
 ${binary}</FictionBook>
 `;

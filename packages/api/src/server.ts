@@ -12,6 +12,7 @@ import { IndexStatus } from './indexer/index.js';
 import authPlugin from './auth/plugin.js';
 import { ContentService } from './content/opds.js';
 import { CoverCache } from './cache/covers.js';
+import { DetailsCache } from './cache/details.js';
 import { QueryCache } from './cache/queries.js';
 import { EmptyQueryError, UnsupportedPredicateError } from './search/compile.js';
 import { InvalidCursorError } from './search/cursor.js';
@@ -29,6 +30,8 @@ declare module 'fastify' {
     searchIndex: IndexStatus;
     content: ContentService;
     covers: CoverCache;
+    /** Кэш разбора fb2: издатель, содержание, объём текста. */
+    details: DetailsCache;
     /** Кэш счётчиков фасетов в app.db. */
     queries: QueryCache;
   }
@@ -78,6 +81,7 @@ export async function buildServer(config: Config): Promise<FastifyInstance> {
   const content = new ContentService(config, fastify.log);
   fastify.decorate('content', content);
   fastify.decorate('covers', new CoverCache(config, fastify.log));
+  fastify.decorate('details', new DetailsCache(config));
   fastify.decorate(
     'queries',
     new QueryCache(db.read, db.write, {
