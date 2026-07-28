@@ -6,6 +6,7 @@ import type { Genre } from '@flibrary/contract';
 import { formatSize } from '../src/lib/format';
 import { compareByLanguageName, languageName } from '../src/lib/lang';
 import { fromSelection, toSelection } from '../src/lib/genres';
+import { createSlots } from '../src/lib/slots';
 
 describe('размер книги', () => {
   it('растёт по единицам, а не считает всё в килобайтах', () => {
@@ -88,5 +89,49 @@ describe('выбор жанров в дереве', () => {
   it('пустой выбор — пустой список', () => {
     expect(fromSelection(tree, {})).toEqual([]);
     expect(toSelection(tree, [])).toEqual({});
+  });
+});
+
+describe('очередь одновременных задач', () => {
+  const record = (log: string[], name: string) => () => log.push(name);
+
+  it('в полёте не больше разрешённого, остальные ждут', () => {
+    const log: string[] = [];
+    const slots = createSlots(2);
+
+    slots.submit(record(log, 'a'));
+    slots.submit(record(log, 'b'));
+    const third = slots.submit(record(log, 'c'));
+
+    expect(log).toEqual(['a', 'b']);
+    expect(slots.busy).toBe(2);
+    expect(third.started).toBe(false);
+  });
+
+  it('законченная задача пускает следующую по очереди', () => {
+    const log: string[] = [];
+    const slots = createSlots(1);
+
+    const first = slots.submit(record(log, 'a'));
+    slots.submit(record(log, 'b'));
+    slots.submit(record(log, 'c'));
+
+    slots.done(first);
+    expect(log).toEqual(['a', 'b']);
+    expect(slots.busy).toBe(1);
+  });
+
+  it('отменённая заявка уходит из очереди, не заняв слот', () => {
+    // Так бывает при уходе со страницы: карточка исчезла, не дождавшись обложки.
+    const log: string[] = [];
+    const slots = createSlots(1);
+
+    const first = slots.submit(record(log, 'a'));
+    const queued = slots.submit(record(log, 'b'));
+    slots.done(queued);
+    slots.done(first);
+
+    expect(log).toEqual(['a']);
+    expect(slots.busy).toBe(0);
   });
 });
