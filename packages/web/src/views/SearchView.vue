@@ -5,10 +5,7 @@ import Button from 'primevue/button';
 import Card from 'primevue/card';
 import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
-import Message from 'primevue/message';
 import MultiSelect from 'primevue/multiselect';
-import Paginator, { type PageState } from 'primevue/paginator';
-import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Slider from 'primevue/slider';
 import TreeSelect from 'primevue/treeselect';
@@ -20,13 +17,13 @@ import type {
   SearchResult,
 } from '@flibrary/contract';
 
-import BookRow from '@/components/BookRow.vue';
+import BookList from '@/components/BookList.vue';
 import FacetPanel from '@/components/FacetPanel.vue';
 import FlagIcon from '@/components/FlagIcon.vue';
 import { getCollection, getGenres, getLanguages, search, searchFacets } from '@/api/client';
 import { fromSelection, toSelection, toTreeNodes, type GenreSelection } from '@/lib/genres';
 import { compareByLanguageName, languageName } from '@/lib/lang';
-import { PER_PAGE_OPTIONS, useSearchState, type SearchForm } from '@/composables/useSearchState';
+import { useSearchState, type SearchForm } from '@/composables/useSearchState';
 
 const { form, applied, query, facetQuery, submit, apply } = useSearchState();
 
@@ -115,10 +112,6 @@ const tookMs = computed(() => results.data.value?.tookMs ?? null);
 
 const facets = computed<Facet[]>(() => counts.data.value?.facets ?? []);
 
-const pageCount = computed(() =>
-  total.value === null ? 0 : Math.ceil(total.value / applied.value.perPage),
-);
-
 /** Сортировка применяется сразу, поэтому читается из применённого запроса, а не из черновика. */
 const sortField = computed({
   get: () => applied.value.sortField,
@@ -176,8 +169,8 @@ function onFacetToggle(field: FacetField, value: string): void {
   submit();
 }
 
-function onPage(event: PageState): void {
-  apply({ page: event.page + 1, perPage: event.rows });
+function onPage(page: number, perPage: number): void {
+  apply({ page, perPage });
 }
 
 function reset(): void {
@@ -322,85 +315,18 @@ function reset(): void {
       </Card>
     </div>
 
-    <div class="stack">
-      <div class="row" style="justify-content: space-between">
-        <span class="muted">
-          <template v-if="results.isLoading.value">Ищем…</template>
-          <template v-else-if="total !== null">
-            Найдено: {{ total }}<template v-if="tookMs !== null"> · {{ tookMs }} мс</template>
-            <template v-if="pageCount > 1">
-              · страница {{ applied.page }} из {{ pageCount }}
-            </template>
-          </template>
-        </span>
-      </div>
-
-      <Message v-if="results.isError.value" severity="error" :closable="false">
-        {{ (results.error.value as Error)?.message ?? 'Ошибка поиска' }}
-      </Message>
-
-      <div v-if="results.isLoading.value" style="display: grid; place-items: center; padding: 2rem">
-        <ProgressSpinner style="width: 40px; height: 40px" />
-      </div>
-
-      <!-- Пусто или нет, видно по самой выдаче: total приходит отдельным запросом и на
-           момент отрисовки списка может ещё не прийти. -->
-      <Message
-        v-else-if="items.length === 0 && applied.page === 1"
-        severity="secondary"
-        :closable="false"
-      >
-        Ничего не найдено. Попробуйте ослабить фильтры.
-      </Message>
-
-      <template v-else>
-        <Paginator
-          :rows="applied.perPage"
-          :first="(applied.page - 1) * applied.perPage"
-          :total-records="total ?? 0"
-          :rows-per-page-options="PER_PAGE_OPTIONS"
-          template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
-          @page="onPage"
-        >
-          <!-- У RowsPerPageDropdown нет своей подписи: без неё это просто число рядом с
-               номерами страниц, и непонятно, что оно значит. -->
-          <template #end><span class="muted">на странице</span></template>
-        </Paginator>
-
-        <!-- Страница за концом выдачи (например, по старой ссылке): выдача не пустая,
-             поэтому показываем не «ничего не найдено», а способ вернуться. -->
-        <Message v-if="items.length === 0" severity="secondary" :closable="false">
-          На этой странице пусто: выдача короче.
-          <Button label="К первой странице" text @click="apply({ page: 1 })" />
-        </Message>
-
-        <!-- Ссылка вокруг всей карточки: кликом открывается книга, а не только заголовок. -->
-        <RouterLink
-          v-for="book in items"
-          :key="book.bookId"
-          class="book-card"
-          :to="{ name: 'book', params: { bookId: book.bookId } }"
-        >
-          <Card :style="{ opacity: results.isFetching.value ? 0.6 : 1 }">
-            <template #content>
-              <BookRow :book="book" />
-            </template>
-          </Card>
-        </RouterLink>
-
-        <Paginator
-          :rows="applied.perPage"
-          :first="(applied.page - 1) * applied.perPage"
-          :total-records="total ?? 0"
-          :rows-per-page-options="PER_PAGE_OPTIONS"
-          template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
-          @page="onPage"
-        >
-          <!-- У RowsPerPageDropdown нет своей подписи: без неё это просто число рядом с
-               номерами страниц, и непонятно, что оно значит. -->
-          <template #end><span class="muted">на странице</span></template>
-        </Paginator>
-      </template>
-    </div>
+    <BookList
+      :items="items"
+      :total="total"
+      :page="applied.page"
+      :per-page="applied.perPage"
+      :loading="results.isLoading.value"
+      :fetching="results.isFetching.value"
+      :took-ms="tookMs"
+      :error="
+        results.isError.value ? ((results.error.value as Error)?.message ?? 'Ошибка поиска') : null
+      "
+      @page="onPage"
+    />
   </div>
 </template>

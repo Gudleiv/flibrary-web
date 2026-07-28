@@ -80,6 +80,11 @@ export async function getLanguages() {
   return unwrap(await api.GET('/languages'));
 }
 
+/** Алфавитный список авторов для раздела «Авторы» — с листанием, а не топ-N подсказок. */
+export async function getAuthors(query: { q?: string; limit?: number; offset?: number }) {
+  return unwrap(await api.GET('/authors', { params: { query } }));
+}
+
 export const coverUrl = (bookId: number, size: 'thumb' | 'full' = 'thumb'): string =>
   `/api/v1/books/${bookId}/cover?size=${size}`;
 
