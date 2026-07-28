@@ -123,6 +123,61 @@ body {
   flex-wrap: wrap;
 }
 
+/* Ссылки в метаданных книги: браузерный синий с подчёркиванием выбивается из темы
+   и в тёмном оформлении почти не читается. */
+.meta a {
+  color: var(--p-primary-color);
+  text-decoration: none;
+}
+
+.meta a:hover {
+  text-decoration: underline;
+}
+
+/* Кнопка в колоночном стеке иначе растягивается на всю ширину и уезжает в центр. */
+.self-start {
+  align-self: flex-start;
+}
+
+/* Боковое меню разделов: авторы, жанры, языки. */
+.side-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.side-item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.3rem 0.4rem;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.side-item:hover {
+  background: var(--p-content-hover-background);
+}
+
+.side-item--on {
+  background: var(--p-highlight-background);
+  color: var(--p-highlight-color);
+}
+
+/* Длинные имена авторов не должны растягивать колонку. */
+.side-item__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-item--on {
+  color: var(--p-primary-color);
+  font-weight: 600;
+}
+
 .login-page {
   display: grid;
   place-items: center;

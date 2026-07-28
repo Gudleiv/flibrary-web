@@ -5,11 +5,10 @@ import Button from 'primevue/button';
 import Card from 'primevue/card';
 import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
-import Message from 'primevue/message';
 import MultiSelect from 'primevue/multiselect';
-import Paginator, { type PageState } from 'primevue/paginator';
-import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
+import Slider from 'primevue/slider';
+import TreeSelect from 'primevue/treeselect';
 import type {
   BookListItem,
   Facet,
@@ -18,21 +17,15 @@ import type {
   SearchResult,
 } from '@flibrary/contract';
 
-import BookRow from '@/components/BookRow.vue';
+import BookList from '@/components/BookList.vue';
 import FacetPanel from '@/components/FacetPanel.vue';
-import { getGenres, getLanguages, search, searchFacets } from '@/api/client';
-import { PER_PAGE_OPTIONS, useSearchState, type SearchForm } from '@/composables/useSearchState';
+import FlagIcon from '@/components/FlagIcon.vue';
+import { getCollection, getGenres, getLanguages, search, searchFacets } from '@/api/client';
+import { fromSelection, toSelection, toTreeNodes, type GenreSelection } from '@/lib/genres';
+import { compareByLanguageName, languageName } from '@/lib/lang';
+import { useSearchState, type SearchForm } from '@/composables/useSearchState';
 
 const { form, applied, query, facetQuery, submit, apply } = useSearchState();
-
-const TEXT_FIELDS: Array<{ label: string; value: SearchForm['field'] }> = [
-  { label: 'в названии', value: 'title' },
-  { label: 'везде', value: 'any' },
-  { label: 'по автору', value: 'author' },
-  { label: 'в серии', value: 'series' },
-  { label: 'в аннотации', value: 'annotation' },
-  { label: 'в ключевых словах', value: 'keyword' },
-];
 
 const SORT_FIELDS: Array<{ label: string; value: SearchForm['sortField'] }> = [
   { label: 'релевантность', value: 'relevance' },
@@ -44,28 +37,53 @@ const SORT_FIELDS: Array<{ label: string; value: SearchForm['sortField'] }> = [
   { label: 'дата добавления', value: 'addedAt' },
 ];
 
-const languages = useQuery({
-  queryKey: ['languages'],
-  queryFn: getLanguages,
-  staleTime: 10 * 60_000,
+const CATALOG = { staleTime: 10 * 60_000 };
+
+const languages = useQuery({ queryKey: ['languages'], queryFn: getLanguages, ...CATALOG });
+const genres = useQuery({ queryKey: ['genres'], queryFn: getGenres, ...CATALOG });
+const collection = useQuery({ queryKey: ['collection'], queryFn: getCollection, ...CATALOG });
+
+/** Языки — по алфавиту названий: искать «Украинский» в списке, отсортированном по
+    числу книг, приходится глазами по всему списку. */
+const languageOptions = computed(() =>
+  [...(languages.data.value?.items ?? [])]
+    .sort((a, b) => compareByLanguageName(a.code, b.code))
+    .map((item) => ({ ...item, name: languageName(item.code) })),
+);
+
+const genreNodes = computed(() => toTreeNodes(genres.data.value?.items ?? []));
+
+/**
+ * Галочки дерева ⇄ список кодов в форме.
+ *
+ * Дерево показывает выбор родителя как галочки на всех потомках, а в запрос уходит
+ * только сам родитель: `includeChildren` уже включает поддерево (см. lib/genres).
+ */
+const genreSelection = computed<GenreSelection>({
+  get: () => toSelection(genres.data.value?.items ?? [], form.genres),
+  set: (selection) => {
+    form.genres = fromSelection(genres.data.value?.items ?? [], selection);
+  },
 });
 
-const genres = useQuery({ queryKey: ['genres'], queryFn: getGenres, staleTime: 10 * 60_000 });
+/** Границы ползунка. До ответа /collection — заведомо широкие, чтобы он не прыгал. */
+const yearBounds = computed(() => ({
+  min: collection.data.value?.yearMin ?? 1500,
+  max: collection.data.value?.yearMax ?? new Date().getFullYear(),
+}));
 
-/** Дерево жанров разворачиваем в плоский список с отступами — для MultiSelect. */
-const genreOptions = computed(() => {
-  const options: Array<{ label: string; value: string }> = [];
-  const walk = (nodes: NonNullable<typeof genres.data.value>['items'], depth: number): void => {
-    for (const node of nodes) {
-      options.push({
-        label: `${'  '.repeat(depth)}${node.title} (${node.books ?? 0})`,
-        value: node.code,
-      });
-      if (node.children && node.children.length > 0) walk(node.children, depth + 1);
-    }
-  };
-  walk(genres.data.value?.items ?? [], 0);
-  return options;
+/**
+ * Ползунок работает с парой чисел, а фильтр — с «границей не задана». Диапазон,
+ * растянутый на всю шкалу, и есть «не задана»: иначе фильтр по годам оставался бы
+ * включённым после того, как пользователь развёл ручки до краёв, и молча выбрасывал
+ * книги без года.
+ */
+const yearRange = computed<number[]>({
+  get: () => [form.yearFrom ?? yearBounds.value.min, form.yearTo ?? yearBounds.value.max],
+  set: ([from, to]) => {
+    form.yearFrom = from === undefined || from <= yearBounds.value.min ? null : from;
+    form.yearTo = to === undefined || to >= yearBounds.value.max ? null : to;
+  },
 });
 
 // Выдача целиком выводится из URL: ключ запроса — сам запрос. Поэтому «назад» из карточки
@@ -93,10 +111,6 @@ const total = computed(() => counts.data.value?.total ?? null);
 const tookMs = computed(() => results.data.value?.tookMs ?? null);
 
 const facets = computed<Facet[]>(() => counts.data.value?.facets ?? []);
-
-const pageCount = computed(() =>
-  total.value === null ? 0 : Math.ceil(total.value / applied.value.perPage),
-);
 
 /** Сортировка применяется сразу, поэтому читается из применённого запроса, а не из черновика. */
 const sortField = computed({
@@ -155,13 +169,14 @@ function onFacetToggle(field: FacetField, value: string): void {
   submit();
 }
 
-function onPage(event: PageState): void {
-  apply({ page: event.page + 1, perPage: event.rows });
+function onPage(page: number, perPage: number): void {
+  apply({ page, perPage });
 }
 
 function reset(): void {
   Object.assign(form, {
-    text: '',
+    title: '',
+    author: '',
     languages: [],
     genres: [],
     exts: [],
@@ -178,56 +193,84 @@ function reset(): void {
   <div class="search-layout">
     <div class="stack">
       <Card>
-        <template #title>Фильтры</template>
+        <template #title>Поиск</template>
         <template #content>
           <form class="stack" @submit.prevent="submit">
-            <InputText v-model="form.text" placeholder="Что ищем" />
-            <Select
-              v-model="form.field"
-              :options="TEXT_FIELDS"
-              option-label="label"
-              option-value="value"
-            />
+            <!-- Два поля вместо «строки и селекта где искать»: так спрашивают почти
+                 всегда, а выбирать поле перед вводом приходилось каждый раз. -->
+            <InputText v-model="form.title" placeholder="Название" autofocus />
+            <InputText v-model="form.author" placeholder="Автор" />
 
             <MultiSelect
               v-model="form.languages"
-              :options="languages.data.value?.items ?? []"
-              option-label="code"
+              :options="languageOptions"
+              option-label="name"
               option-value="code"
               placeholder="Язык"
               :loading="languages.isLoading.value"
               display="chip"
               filter
-            />
+              filter-placeholder="Найти язык"
+            >
+              <template #option="{ option }">
+                <span class="row" style="gap: 0.5rem">
+                  <FlagIcon :code="option.code" />
+                  {{ option.name }}
+                  <span class="muted">{{ option.books }}</span>
+                </span>
+              </template>
+              <template #chip="{ value }">
+                <span class="row" style="gap: 0.35rem">
+                  <FlagIcon :code="value" :width="14" />
+                  {{ languageName(value) }}
+                </span>
+              </template>
+            </MultiSelect>
 
-            <MultiSelect
-              v-model="form.genres"
-              :options="genreOptions"
-              option-label="label"
-              option-value="value"
+            <!-- Дерево, а не плоский список: жанров в коллекции под сотню, и выбрать
+                 «Фантастику целиком» без иерархии значит отметить два десятка строк. -->
+            <TreeSelect
+              v-model="genreSelection"
+              :options="genreNodes"
+              selection-mode="checkbox"
+              display="chip"
               placeholder="Жанр"
               :loading="genres.isLoading.value"
-              display="chip"
-              filter
-            />
+            >
+              <template #option="{ node }">
+                {{ node.label }} <span class="muted">{{ node.books }}</span>
+              </template>
+            </TreeSelect>
 
-            <div class="row">
-              <InputNumber
-                v-model="form.yearFrom"
-                placeholder="Год от"
-                :use-grouping="false"
-                :min="1000"
-                :max="2100"
-                :input-style="{ width: '6rem' }"
-              />
-              <InputNumber
-                v-model="form.yearTo"
-                placeholder="до"
-                :use-grouping="false"
-                :min="1000"
-                :max="2100"
-                :input-style="{ width: '6rem' }"
-              />
+            <div class="stack" style="gap: 0.35rem">
+              <span class="muted">Год издания</span>
+              <div class="row" style="flex-wrap: nowrap">
+                <InputNumber
+                  v-model="form.yearFrom"
+                  :placeholder="String(yearBounds.min)"
+                  :use-grouping="false"
+                  :min="yearBounds.min"
+                  :max="yearBounds.max"
+                  :input-style="{ width: '4.5rem' }"
+                  size="small"
+                />
+                <Slider
+                  v-model="yearRange"
+                  range
+                  :min="yearBounds.min"
+                  :max="yearBounds.max"
+                  style="flex: 1"
+                />
+                <InputNumber
+                  v-model="form.yearTo"
+                  :placeholder="String(yearBounds.max)"
+                  :use-grouping="false"
+                  :min="yearBounds.min"
+                  :max="yearBounds.max"
+                  :input-style="{ width: '4.5rem' }"
+                  size="small"
+                />
+              </div>
             </div>
 
             <div class="row">
@@ -272,85 +315,18 @@ function reset(): void {
       </Card>
     </div>
 
-    <div class="stack">
-      <div class="row" style="justify-content: space-between">
-        <span class="muted">
-          <template v-if="results.isLoading.value">Ищем…</template>
-          <template v-else-if="total !== null">
-            Найдено: {{ total }}<template v-if="tookMs !== null"> · {{ tookMs }} мс</template>
-            <template v-if="pageCount > 1">
-              · страница {{ applied.page }} из {{ pageCount }}
-            </template>
-          </template>
-        </span>
-      </div>
-
-      <Message v-if="results.isError.value" severity="error" :closable="false">
-        {{ (results.error.value as Error)?.message ?? 'Ошибка поиска' }}
-      </Message>
-
-      <div v-if="results.isLoading.value" style="display: grid; place-items: center; padding: 2rem">
-        <ProgressSpinner style="width: 40px; height: 40px" />
-      </div>
-
-      <!-- Пусто или нет, видно по самой выдаче: total приходит отдельным запросом и на
-           момент отрисовки списка может ещё не прийти. -->
-      <Message
-        v-else-if="items.length === 0 && applied.page === 1"
-        severity="secondary"
-        :closable="false"
-      >
-        Ничего не найдено. Попробуйте ослабить фильтры.
-      </Message>
-
-      <template v-else>
-        <Paginator
-          :rows="applied.perPage"
-          :first="(applied.page - 1) * applied.perPage"
-          :total-records="total ?? 0"
-          :rows-per-page-options="PER_PAGE_OPTIONS"
-          template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
-          @page="onPage"
-        >
-          <!-- У RowsPerPageDropdown нет своей подписи: без неё это просто число рядом с
-               номерами страниц, и непонятно, что оно значит. -->
-          <template #end><span class="muted">на странице</span></template>
-        </Paginator>
-
-        <!-- Страница за концом выдачи (например, по старой ссылке): выдача не пустая,
-             поэтому показываем не «ничего не найдено», а способ вернуться. -->
-        <Message v-if="items.length === 0" severity="secondary" :closable="false">
-          На этой странице пусто: выдача короче.
-          <Button label="К первой странице" text @click="apply({ page: 1 })" />
-        </Message>
-
-        <!-- Ссылка вокруг всей карточки: кликом открывается книга, а не только заголовок. -->
-        <RouterLink
-          v-for="book in items"
-          :key="book.bookId"
-          class="book-card"
-          :to="{ name: 'book', params: { bookId: book.bookId } }"
-        >
-          <Card :style="{ opacity: results.isFetching.value ? 0.6 : 1 }">
-            <template #content>
-              <BookRow :book="book" />
-            </template>
-          </Card>
-        </RouterLink>
-
-        <Paginator
-          :rows="applied.perPage"
-          :first="(applied.page - 1) * applied.perPage"
-          :total-records="total ?? 0"
-          :rows-per-page-options="PER_PAGE_OPTIONS"
-          template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown"
-          @page="onPage"
-        >
-          <!-- У RowsPerPageDropdown нет своей подписи: без неё это просто число рядом с
-               номерами страниц, и непонятно, что оно значит. -->
-          <template #end><span class="muted">на странице</span></template>
-        </Paginator>
-      </template>
-    </div>
+    <BookList
+      :items="items"
+      :total="total"
+      :page="applied.page"
+      :per-page="applied.perPage"
+      :loading="results.isLoading.value"
+      :fetching="results.isFetching.value"
+      :took-ms="tookMs"
+      :error="
+        results.isError.value ? ((results.error.value as Error)?.message ?? 'Ошибка поиска') : null
+      "
+      @page="onPage"
+    />
   </div>
 </template>

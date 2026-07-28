@@ -10,13 +10,13 @@
 // поиск, а на экране висит то, что было отправлено последним.
 
 import { computed, reactive, watch } from 'vue';
-import type { FacetField, SearchNode, SearchQuery, SortSpec, TextField } from '@flibrary/contract';
+import type { FacetField, SearchNode, SearchQuery, SortSpec } from '@flibrary/contract';
 import { useRoute, useRouter } from 'vue-router';
 
 export interface SearchForm {
-  text: string;
-  /** По каким полям искать текст. */
-  field: TextField;
+  /** Отдельные поля, а не «строка + где искать»: так спрашивают в девяти случаях из десяти. */
+  title: string;
+  author: string;
   languages: string[];
   genres: string[];
   /** Расширения без точки — как их отдаёт фасет. */
@@ -44,10 +44,8 @@ export const PER_PAGE_OPTIONS = [20, 50, 100, 200];
 const DEFAULT_PER_PAGE = 50;
 
 export const createEmptyForm = (): SearchForm => ({
-  text: '',
-  // По умолчанию ищем по названию: это то, чего от поиска ждут чаще всего, а «везде»
-  // на большой коллекции даёт много попаданий по аннотациям и уводит от искомого.
-  field: 'title',
+  title: '',
+  author: '',
   languages: [],
   genres: [],
   exts: [],
@@ -65,8 +63,14 @@ export const createEmptyForm = (): SearchForm => ({
 function buildWhere(form: SearchForm): SearchNode {
   const nodes: SearchNode[] = [];
 
-  if (form.text.trim() !== '') {
-    nodes.push({ field: form.field, op: 'prefix', value: form.text.trim() });
+  // Два поля — два независимых предиката, объединённых `and`: «Стругацкие» в поле
+  // автора и «Пикник» в поле названия должны сойтись на одной книге, а не дать
+  // объединение двух выдач.
+  if (form.title.trim() !== '') {
+    nodes.push({ field: 'title', op: 'prefix', value: form.title.trim() });
+  }
+  if (form.author.trim() !== '') {
+    nodes.push({ field: 'author', op: 'prefix', value: form.author.trim() });
   }
   if (form.languages.length > 0) {
     nodes.push({ field: 'lang', op: 'in', values: form.languages });
@@ -122,12 +126,18 @@ export function buildFacetQuery(form: SearchForm): SearchQuery {
 
 const LIST_SEPARATOR = ',';
 
-function toQueryParams(form: SearchForm): Record<string, string> {
+/**
+ * Форма → параметры URL. Экспортируется вместе с обратной функцией: они образуют пару,
+ * и проверять их имеет смысл только вместе — на них держится совместимость ссылок.
+ */
+export function toQueryParams(form: SearchForm): Record<string, string> {
   const params: Record<string, string> = {};
   const empty = createEmptyForm();
 
-  if (form.text !== empty.text) params.q = form.text;
-  if (form.field !== empty.field) params.in = form.field;
+  if (form.title !== empty.title) params.title = form.title;
+  // `by`, а не `author`: `author` уже занят списком идентификаторов авторов, выбранных
+  // в панели уточнения, и переименовать его — сломать уже разосланные ссылки.
+  if (form.author !== empty.author) params.by = form.author;
   if (form.languages.length > 0) params.lang = form.languages.join(LIST_SEPARATOR);
   if (form.genres.length > 0) params.genre = form.genres.join(LIST_SEPARATOR);
   if (form.exts.length > 0) params.ext = form.exts.join(LIST_SEPARATOR);
@@ -143,7 +153,7 @@ function toQueryParams(form: SearchForm): Record<string, string> {
   return params;
 }
 
-function fromQueryParams(query: Record<string, unknown>): SearchForm {
+export function fromQueryParams(query: Record<string, unknown>): SearchForm {
   const string = (key: string): string | undefined => {
     const value = query[key];
     return typeof value === 'string' ? value : undefined;
@@ -165,10 +175,17 @@ function fromQueryParams(query: Record<string, unknown>): SearchForm {
   const page = number('page');
   const perPage = number('per');
 
+  // Ссылки со старой формой поиска («строка + где искать») открываться должны, поэтому
+  // `q`/`in` продолжаем читать. `in=author` уходит в поле автора, всё остальное — в поле
+  // названия: поиска по аннотации и ключевым словам в форме больше нет, и честнее сузить
+  // запрос до названия, чем молча вернуть не то, что искали.
+  const legacy = string('q');
+  const legacyByAuthor = legacy !== undefined && string('in') === 'author';
+
   return {
     ...form,
-    text: string('q') ?? form.text,
-    field: (string('in') as TextField | undefined) ?? form.field,
+    title: string('title') ?? (legacyByAuthor ? form.title : (legacy ?? form.title)),
+    author: string('by') ?? (legacyByAuthor ? legacy : form.author),
     languages: list('lang'),
     genres: list('genre'),
     exts: list('ext'),

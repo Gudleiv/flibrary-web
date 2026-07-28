@@ -36,10 +36,9 @@ async function onSubmit(): Promise<void> {
 <template>
   <div class="login-page">
     <Card style="width: 360px">
+      <!-- Про отсутствие регистрации здесь не пишем: кнопки «зарегистрироваться» на форме
+           нет, объяснять пользователю нечего. Разработчику это сказано в openapi.yaml. -->
       <template #title>Вход</template>
-      <template #subtitle>
-        <span class="muted">Регистрации нет — аккаунт создаёт администратор</span>
-      </template>
       <template #content>
         <form class="stack" @submit.prevent="onSubmit">
           <InputText

@@ -49,6 +49,8 @@ services:
       APP_DB: /var/lib/flibrary-web/app.db
       CACHE_DIR: /var/cache/flibrary-web
       CONTENT_SERVICE_URL: http://opds:12791
+      # Та же папка, что и у opds: из неё читаются отзывы читателей (reviews/).
+      ADDITIONAL_DIR: ${ADDITIONAL_DIR:-}
       SESSION_SECRET: ${SESSION_SECRET:?задайте SESSION_SECRET, например openssl rand -hex 32}
       # По умолчанию раскладка с доменом и TLS, поэтому кука Secure. Если сервис открыт по
       # HTTP (LAN-адрес без домена), такую куку браузер молча выбрасывает — вход «не

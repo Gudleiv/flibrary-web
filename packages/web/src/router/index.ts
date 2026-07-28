@@ -15,6 +15,23 @@ const routes: RouteRecordRaw[] = [
     name: 'search',
     component: () => import('@/views/SearchView.vue'),
   },
+  // Выбранный элемент раздела — часть пути, а не состояние компонента: тогда «назад»,
+  // «вперёд», перезагрузка и отправленная ссылка работают сами, без нашего участия.
+  {
+    path: '/authors/:authorId?',
+    name: 'authors',
+    component: () => import('@/views/AuthorsView.vue'),
+  },
+  {
+    path: '/genres/:code?',
+    name: 'genres',
+    component: () => import('@/views/GenresView.vue'),
+  },
+  {
+    path: '/languages/:code?',
+    name: 'languages',
+    component: () => import('@/views/LanguagesView.vue'),
+  },
   {
     path: '/books/:bookId',
     name: 'book',

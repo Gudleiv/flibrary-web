@@ -68,6 +68,21 @@ export async function getBook(bookId: number): Promise<BookDetail> {
   return unwrap(await api.GET('/books/{bookId}', { params: { path: { bookId } } })) as BookDetail;
 }
 
+/**
+ * Сведения из самого файла книги: издатель, содержание, объём текста.
+ *
+ * Отдельно от карточки, потому что за ними стоит распаковка архива внутренним
+ * C++-сервером: без него ручка отдаёт 502, и это штатно — карточка живёт без них.
+ */
+export async function getBookDetails(bookId: number) {
+  return unwrap(await api.GET('/books/{bookId}/details', { params: { path: { bookId } } }));
+}
+
+/** Отзывы читателей. Пустой список — нормальный ответ: отзывы есть не у всех коллекций. */
+export async function getBookReviews(bookId: number) {
+  return unwrap(await api.GET('/books/{bookId}/reviews', { params: { path: { bookId } } }));
+}
+
 export async function getCollection() {
   return unwrap(await api.GET('/collection'));
 }
@@ -78,6 +93,11 @@ export async function getGenres() {
 
 export async function getLanguages() {
   return unwrap(await api.GET('/languages'));
+}
+
+/** Алфавитный список авторов для раздела «Авторы» — с листанием, а не топ-N подсказок. */
+export async function getAuthors(query: { q?: string; limit?: number; offset?: number }) {
+  return unwrap(await api.GET('/authors', { params: { query } }));
 }
 
 export const coverUrl = (bookId: number, size: 'thumb' | 'full' = 'thumb'): string =>

@@ -4,6 +4,9 @@ import Tag from 'primevue/tag';
 import type { BookListItem } from '@flibrary/contract';
 
 import BookCover from '@/components/BookCover.vue';
+import FlagIcon from '@/components/FlagIcon.vue';
+import { formatSize } from '@/lib/format';
+import { languageName } from '@/lib/lang';
 
 const props = defineProps<{ book: BookListItem }>();
 
@@ -28,11 +31,7 @@ const seriesLabel = computed(() => {
     : `${series.title} #${props.book.seqNumber}`;
 });
 
-const sizeLabel = computed(() =>
-  props.book.size === null || props.book.size === undefined
-    ? null
-    : `${Math.max(1, Math.round(props.book.size / 1024))} КБ`,
-);
+const sizeLabel = computed(() => formatSize(props.book.size));
 </script>
 
 <template>
@@ -47,7 +46,10 @@ const sizeLabel = computed(() =>
       <div class="row" style="gap: 0.35rem">
         <Tag v-if="seriesLabel" severity="secondary" :value="seriesLabel" />
         <Tag v-if="book.year" severity="secondary" :value="String(book.year)" />
-        <Tag v-if="book.lang" severity="secondary" :value="book.lang" />
+        <Tag v-if="book.lang" severity="secondary">
+          <FlagIcon :code="book.lang" :width="14" />
+          {{ languageName(book.lang) }}
+        </Tag>
         <Tag v-if="book.ext" severity="secondary" :value="book.ext" />
         <Tag v-if="sizeLabel" severity="secondary" :value="sizeLabel" />
         <Tag v-if="book.libRate" severity="info" :value="`★ ${book.libRate}`" />

@@ -13,7 +13,9 @@ import {
   type BookFormat,
 } from '../content/opds.js';
 import type { CoverSize } from '../cache/covers.js';
-import { mapBookRow, type BookRow } from './mappers.js';
+import { parseFb2 } from '../content/fb2.js';
+import { readReviews, reviewsDirectory } from '../content/reviews.js';
+import { mapBookRow, normalizeExt, type BookRow } from './mappers.js';
 import { loadAuthors, loadGenres, loadKeywords } from './relations.js';
 
 const bookIdParams = {
@@ -27,11 +29,13 @@ interface DetailRow extends BookRow {
   archive: string | null;
   fileName: string | null;
   updateDate: string | null;
+  sourceLib: string | null;
+  libId: string | null;
   isDeleted: number;
 }
 
 const bookRoutes: FastifyPluginAsync = async (fastify) => {
-  const { db, config, content, covers } = fastify;
+  const { db, config, content, covers, details } = fastify;
 
   fastify.get<{ Params: { bookId: number } }>(
     '/books/:bookId',
@@ -53,6 +57,8 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
              b.IsDeleted   AS isDeleted,
              b.UpdateDate  AS updateDate,
              b.FileName    AS fileName,
+             b.SourceLib   AS sourceLib,
+             b.LibID       AS libId,
              f.FolderTitle AS archive,
              s.SeriesID    AS seriesId,
              s.SeriesTitle AS seriesTitle,
@@ -90,11 +96,129 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
         archive: row.archive,
         fileName: row.fileName,
         updateDate: row.updateDate,
+        sourceLib: row.sourceLib,
+        libId: row.libId,
         // Исходный формат всегда доступен; epub/mobi зависят от конвертеров,
         // настроенных в FLibrary, — их список отдаёт /collection.
         formats: [row.ext?.replace(/^\./, '') ?? 'fb2', 'zip'],
         seriesBooks: [],
       };
+    },
+  );
+
+  /**
+   * Сведения из самого файла книги: издатель, язык оригинала, переводчики, содержание,
+   * объём текста. В коллекционной БД их нет — inpx их не переносит, и FLibrary их тоже
+   * достаёт разбором fb2.
+   *
+   * Отдельной ручкой, а не в составе карточки: тут распаковка архива на стороне
+   * C++-сервера, и заставлять карточку её ждать незачем. Без content-service — 502,
+   * и это штатно: карточка живёт без этих полей.
+   */
+  fastify.get<{ Params: { bookId: number } }>(
+    '/books/:bookId/details',
+    { schema: { params: bookIdParams } },
+    async (request, reply) => {
+      const { bookId } = request.params;
+
+      const exists = db.read
+        .prepare(`SELECT IsDeleted AS isDeleted, Ext AS ext FROM ${C}.Books_View WHERE BookID = ?`)
+        .get(bookId) as { isDeleted: number; ext: string | null } | undefined;
+
+      if (exists === undefined || (config.hideDeleted && exists.isDeleted === 1)) {
+        return reply
+          .status(404)
+          .type('application/problem+json')
+          .send({ title: 'Книга не найдена', status: 404 });
+      }
+
+      const cached = await details.get(bookId);
+      if (cached !== null) return cached;
+
+      // Разбирать умеем только fb2. Остальное (djvu, pdf, epub) — чужие форматы,
+      // и молчать об этом нельзя: пустой ответ читался бы как «в книге ничего нет».
+      if (normalizeExt(exists.ext) !== 'fb2') {
+        return reply
+          .status(415)
+          .type('application/problem+json')
+          .send({
+            title: 'Формат книги не разбирается',
+            status: 415,
+            detail: `Сведения из файла читаются только из fb2, у этой книги — ${
+              normalizeExt(exists.ext) ?? 'неизвестный формат'
+            }.`,
+          });
+      }
+
+      let response;
+      try {
+        // `fb2`, а не `original`: нужен распакованный XML, а не архив.
+        response = await content.book(bookId, 'fb2');
+      } catch (error) {
+        return sendContentProblem(reply, error, 'Не удалось получить файл книги');
+      }
+
+      if (!response.ok) {
+        return sendUpstreamProblem(reply, response.status, 'Не удалось получить файл книги');
+      }
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of response.body) chunks.push(chunk as Buffer);
+      const parsed = parseFb2(Buffer.concat(chunks));
+
+      await details.put(bookId, parsed);
+      return parsed;
+    },
+  );
+
+  /**
+   * Отзывы читателей — исторический слепок с форума библиотеки.
+   *
+   * Живут вне БД, в 7z-архивах «дополнительной папки» коллекции. Не настроена или
+   * архивов нет — пустой список, а не ошибка: у большинства коллекций отзывов нет,
+   * и раздел просто не появляется.
+   */
+  fastify.get<{ Params: { bookId: number } }>(
+    '/books/:bookId/reviews',
+    { schema: { params: bookIdParams } },
+    async (request, reply) => {
+      const { bookId } = request.params;
+
+      const directory = reviewsDirectory(config.additionalDir);
+      if (directory === null) return { items: [] };
+
+      // Имя записи внутри архива — FolderTitle, решётка, имя файла с расширением
+      // (`inpx.cpp::ReadReviews`).
+      //
+      // Ext тут НЕ дописывается: Books_View.FileName — это уже `FileName || Ext`
+      // (голое имя лежит в BaseFileName). Отсюда и расхождение в самой FLibrary:
+      // запросы по таблице Books склеивают `b.FileName || b.Ext`, а по представлению
+      // (AuthorReviewModel) берут FileName как есть — и оба правы.
+      const row = db.read
+        .prepare(
+          `SELECT r.Folder AS archive,
+                  f.FolderTitle || '#' || b.FileName AS entry
+             FROM ${C}.Reviews r
+             JOIN ${C}.Books_View b ON b.BookID = r.BookID
+             JOIN ${C}.Folders f ON f.FolderID = b.FolderID
+            WHERE r.BookID = ?`,
+        )
+        .get(bookId) as { archive: string; entry: string } | undefined;
+
+      if (row === undefined) return { items: [] };
+
+      try {
+        return { items: await readReviews(directory, row.archive, row.entry) };
+      } catch (error) {
+        // Сломанный или недоступный архив — это про сервер, а не про книгу; молчать
+        // о нём нельзя, но и карточку он валить не должен.
+        request.log.warn({ err: error, bookId }, 'не удалось прочитать архив отзывов');
+        return reply.status(503).type('application/problem+json').send({
+          title: 'Отзывы недоступны',
+          status: 503,
+          detail: 'Не удалось прочитать архив отзывов коллекции.',
+        });
+      }
     },
   );
 

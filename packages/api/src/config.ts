@@ -25,6 +25,12 @@ export interface Config {
   sessionTtlDays: number;
   cookieName: string;
   cookieSecure: boolean;
+  /**
+   * «Дополнительная папка» коллекции — та же, что в настройках FLibrary
+   * (`additional`). Отзывы читателей лежат в её подкаталоге `reviews` архивами 7z.
+   * Пусто — отзывов у коллекции нет, и раздел не показывается.
+   */
+  additionalDir: string;
   /** Скрывать книги, помеченные в коллекции удалёнными. */
   hideDeleted: boolean;
   /** Время жизни кэша счётчиков фасетов, секунды. 0 — считать всегда заново. */
@@ -66,6 +72,9 @@ export function loadConfig(): Config {
     cacheDir: resolve(required('CACHE_DIR', '../../data/cache')),
     contentServiceUrl: required('CONTENT_SERVICE_URL', 'http://127.0.0.1:12791'),
     contentServiceConcurrency: number('CONTENT_SERVICE_CONCURRENCY', 4),
+    // Не required: коллекции без дополнительной папки — обычное дело.
+    additionalDir:
+      process.env.ADDITIONAL_DIR === undefined ? '' : resolve(process.env.ADDITIONAL_DIR),
     // В проде секрет обязателен; в разработке допускаем предсказуемый, иначе
     // каждый перезапуск разлогинивает.
     sessionSecret: isProduction
