@@ -10,6 +10,9 @@ import { computed, ref } from 'vue';
 import Button from 'primevue/button';
 import type { Facet, FacetField } from '@flibrary/contract';
 
+import FlagIcon from '@/components/FlagIcon.vue';
+import { languageName } from '@/lib/lang';
+
 const props = defineProps<{
   facets: Facet[];
   /** Уже выбранные значения по полям — строками, как их отдаёт фасет. */
@@ -76,7 +79,13 @@ const isSelected = (field: FacetField, value: string): boolean =>
         :aria-pressed="isSelected(section.field, item.value)"
         @click="emit('toggle', section.field, item.value)"
       >
-        <span class="facet-value__label">{{ item.label ?? item.value }}</span>
+        <!-- Подпись языка — на клиенте: названия берутся из Intl браузера, у сервера
+             своего справочника языков нет и заводить его ради этого незачем. -->
+        <span v-if="section.field === 'lang'" class="facet-value__label row" style="gap: 0.4rem">
+          <FlagIcon :code="item.value" :width="16" />
+          {{ languageName(item.value) }}
+        </span>
+        <span v-else class="facet-value__label">{{ item.label ?? item.value }}</span>
         <span class="muted">{{ item.count }}</span>
       </button>
 
