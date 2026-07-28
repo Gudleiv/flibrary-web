@@ -1,16 +1,16 @@
 # Деплой
 
 Всё живёт в `docker compose` на одной Linux-машине: на хосте нужны только Docker и
-Compose v2 — ни Node, ни pnpm, ни Qt. Библиотека (коллекция и архивы) — каталог на дисках
+Compose v2 — ни Node, ни pnpm, ни Qt. Библиотека (коллекция и архивы) — каталоги на дисках
 этой же машины; сетевых хранилищ раскладка не поддерживает намеренно (почему — в
 [decisions.md](decisions.md), решение 12).
 
 ```
 браузер → caddy  (TLS + собранная SPA)
-              └→ api    (Node/Fastify)  → /library/collection.db  (ro)
-                                        → app.db, кэш обложек     (свои тома)
-                                        → opds  (C++ FLibrary)    — обложки и файлы книг
-                                             └→ /library/collection.db, /library/archives (ro)
+              └→ api    (Node/Fastify)  → /collection/collection.db  (ro)
+                                        → app.db, кэш обложек        (каталоги с хоста)
+                                        → opds  (C++ FLibrary)       — обложки и файлы книг
+                                             └→ /collection/collection.db, /library (ro)
 ```
 
 Наружу смотрит только `caddy`. `api` доступен ему по внутренней сети, `opds` — только `api`:
@@ -33,7 +33,7 @@ C++-сервер **не собирается из исходников**: это
 
 ```bash
 cd deploy
-cp .env.example .env && chmod 600 .env      # заполнить: SESSION_SECRET, LIBRARY_PATH, домен
+cp .env.example .env && chmod 600 .env      # заполнить: SESSION_SECRET, пути, домен
 openssl rand -hex 32                        # в SESSION_SECRET
 
 docker compose up -d --build
@@ -52,32 +52,33 @@ docker compose exec api node dist/cli/reindex.js
 
 ## Где что лежит на хосте
 
-| Что                                          | Где на машине                                      | Как подключено            |
-| -------------------------------------------- | -------------------------------------------------- | ------------------------- |
-| `collection.db` + архивы книг                | `LIBRARY_PATH` из `.env` (например `/srv/library`) | bind-mount `/library:ro`  |
-| `app.db` (пользователи, сессии, свои данные) | том `flibrary-web_app-db`                          | `/var/lib/flibrary-web`   |
-| кэш обложек                                  | том `flibrary-web_cover-cache`                     | `/var/cache/flibrary-web` |
-| сертификаты и конфиг Caddy                   | тома `flibrary-web_caddy-data`, `…_caddy-config`   | `/data`, `/config`        |
+| Что                                          | Где на машине                                    | Как подключено              |
+| -------------------------------------------- | ------------------------------------------------ | --------------------------- |
+| архивы книг                                  | `LIBRARY_PATH` (например `/srv/library`)         | bind-mount `/library:ro`    |
+| `collection.db`                              | `COLLECTION_PATH`                                | bind-mount `/collection:ro` |
+| `app.db` (пользователи, сессии, свои данные) | `APP_PATH` (по умолчанию `deploy/data/app`)      | `/var/lib/flibrary-web`     |
+| кэш обложек                                  | `CACHE_PATH` (по умолчанию `deploy/data/cache`)  | `/var/cache/flibrary-web`   |
+| сертификаты и конфиг Caddy                   | тома `flibrary-web_caddy-data`, `…_caddy-config` | `/data`, `/config`          |
 
-Именованные тома Docker — это каталоги в `/var/lib/docker/volumes/<имя>/_data` на той же
-машине; ничего сетевого в раскладке нет.
+Все пути — из `.env`, все каталоги на дисках этой же машины; ничего сетевого в раскладке
+нет. `COLLECTION_PATH` отдельно от `LIBRARY_PATH`, потому что базе полезен быстрый диск, а
+архивам достаточно большого; лежат вместе — обе переменные указывают на один каталог.
 
-`LIBRARY_PATH` монтируется длинным синтаксисом с `create_host_path: false`: при опечатке в
-пути compose не создаст пустой каталог от root, а откажется поднимать сервис. Проверить,
-что коллекция на месте:
+Библиотека монтируется длинным синтаксисом с `create_host_path: false`: при опечатке в пути
+compose не создаст пустой каталог от root, а откажется поднимать сервис. `APP_PATH` и
+`CACHE_PATH`, наоборот, создаются сами. Проверить, что коллекция на месте:
 
 ```bash
-docker compose exec api ls -la /library
+docker compose exec api ls -la /collection /library
 ```
 
 Прав на запись библиотеке не нужно: `/Images/*` (обложки и файлы книг) на read-only
 коллекции работают. Бэкапить стоит `app.db` — всё остальное восстанавливается пересборкой
-и переиндексацией:
+и переиндексацией. Это обычный файл на хосте, поэтому и бэкап обычный:
 
 ```bash
 docker compose stop api
-docker run --rm -v flibrary-web_app-db:/data:ro -v "$PWD":/backup \
-    alpine tar czf /backup/app-db.tar.gz -C /data .
+cp /srv/flibrary/app/app.db app-db-backup.db     # путь из APP_PATH
 docker compose start api
 ```
 
@@ -151,7 +152,7 @@ docker compose exec api node dist/cli/reindex.js
   представление `Books_View_Opds`, то есть пишет в коллекцию. Если файл только для чтения,
   обложки и файлы книг всё равно отдаются (проверено), а `/opds`, `/web` и `/main/getBooks/*`
   отдают пустоту. Нам этого достаточно — мы проксируем только `/Images/*`. Если нужен
-  OPDS-каталог для читалок, уберите `read_only: true` у тома `/library` в сервисе `opds`
+  OPDS-каталог для читалок, уберите `read_only: true` у тома `/collection` в сервисе `opds`
   **и** оставьте автообновление коллекции выключенным.
 - **Падает по segfault, если клиент обрывает соединение** на середине выдачи: 30 оборванных
   запросов к `/Images/covers/*` напрямую роняют процесс (`segfault ... in liblogic.so`).

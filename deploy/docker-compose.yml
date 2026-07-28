@@ -8,10 +8,13 @@
 #
 #  * C++-сервер не публикует портов наружу вообще. Он внутренний content-service, к нему
 #    обращается только api по внутренней сети compose.
-#  * Библиотека (collection.db и архивы) — каталог с хоста, `LIBRARY_PATH`, примонтированный
-#    read-only и в api, и в opds.
-#  * Наши данные (app.db, кэш обложек, сертификаты Caddy) — именованные тома, то есть
-#    каталоги в `/var/lib/docker/volumes` на той же машине.
+#  * Библиотека — два каталога с хоста, оба read-only и в api, и в opds: `LIBRARY_PATH`
+#    с архивами книг и `COLLECTION_PATH` с `collection.db`. Порознь, потому что база
+#    выигрывает от быстрого локального диска, а архивы могут лежать на медленном большом
+#    (см. `docs/decisions.md`, решение 12); лежат в одном каталоге — обе переменные
+#    указывают на него.
+#  * Наши данные (app.db, кэш обложек) — каталоги на хосте, `APP_PATH` и `CACHE_PATH`:
+#    бэкапится обычным `cp`. Сертификаты Caddy — именованные тома, их не трогают.
 #  * Ничего не нужно собирать на хосте: и api, и SPA собираются в образах.
 #
 # Переменные — в `.env` рядом с этим файлом, шаблон в `.env.example`.
@@ -25,8 +28,10 @@ services:
       dockerfile: deploy/web.Dockerfile
     restart: unless-stopped
     ports:
-      - '80:80'
-      - '443:443'
+      - '${HTTP_PORT:-80}:80'
+      # Если TLS терминирует внешний прокси, Caddy на 443 не слушает (`SITE_ADDRESS=:80`),
+      # но порт всё равно публикуется. Занят на хосте — задайте другой: `HTTPS_PORT=8443`.
+      - '${HTTPS_PORT:-443}:443'
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
     volumes:
@@ -45,7 +50,7 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: '3000'
-      COLLECTION_DB: /library/${COLLECTION_FILE:-collection.db}
+      COLLECTION_DB: /collection/${COLLECTION_FILE:-collection.db}
       APP_DB: /var/lib/flibrary-web/app.db
       CACHE_DIR: /var/cache/flibrary-web
       CONTENT_SERVICE_URL: http://opds:12791
@@ -60,16 +65,25 @@ services:
       # Коллекция — только чтение: её схемой владеет FLibrary.
       #
       # Длинный синтаксис ради `create_host_path: false`: при обычном bind-mount опечатка в
-      # LIBRARY_PATH молча создаёт пустой каталог от root, и разбираться приходится уже с
+      # пути молча создаёт пустой каталог от root, и разбираться приходится уже с
       # «коллекция не открывается».
       - type: bind
-        source: ${LIBRARY_PATH:?укажите LIBRARY_PATH — каталог с collection.db и архивами}
+        source: ${COLLECTION_PATH:?укажите COLLECTION_PATH — каталог с collection.db}
+        target: /collection
+        read_only: true
+        bind:
+          create_host_path: false
+      # Архивы нужны api не для книг (их отдаёт opds), а ради ADDITIONAL_DIR: отзывы
+      # читателей — 7z-архивы, которые api распаковывает сам.
+      - type: bind
+        source: ${LIBRARY_PATH:?укажите LIBRARY_PATH — каталог с архивами книг}
         target: /library
         read_only: true
         bind:
           create_host_path: false
-      - app-db:/var/lib/flibrary-web
-      - cover-cache:/var/cache/flibrary-web
+      # А это, наоборот, каталоги на запись, и create_host_path нужен: пусть создаются сами.
+      - ${APP_PATH:-./data/app}:/var/lib/flibrary-web
+      - ${CACHE_PATH:-./data/cache}:/var/cache/flibrary-web
     depends_on:
       - opds
 
@@ -87,8 +101,8 @@ services:
       - '12791'
     environment:
       COLLECTION_NAME: ${COLLECTION_NAME:-collection}
-      COLLECTION_DB: /library/${COLLECTION_FILE:-collection.db}
-      ARCHIVES_DIR: /library/${ARCHIVES_SUBDIR:-archives}
+      COLLECTION_DB: /collection/${COLLECTION_FILE:-collection.db}
+      ARCHIVES_DIR: /library
       # «Дополнительные» файлы FLibrary — вынесенные из fb2 картинки (covers/, images/),
       # как у flibusta. Пусто, если картинки лежат внутри книг.
       ADDITIONAL_DIR: ${ADDITIONAL_DIR:-}
@@ -96,16 +110,20 @@ services:
       # Тоже read-only: /Images/* (обложки и файлы книг — всё, что мы проксируем) на
       # read-only коллекции работают. Ценой отключается OPDS-каталог самого C++-сервера:
       # ему нужно создать представление Books_View_Opds, то есть запись. Если нужен OPDS
-      # для читалок — уберите `read_only: true` (см. docs/deploy.md).
+      # для читалок — уберите `read_only: true` у /collection (см. docs/deploy.md).
       - type: bind
-        source: ${LIBRARY_PATH:?укажите LIBRARY_PATH — каталог с collection.db и архивами}
+        source: ${COLLECTION_PATH:?укажите COLLECTION_PATH — каталог с collection.db}
+        target: /collection
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${LIBRARY_PATH:?укажите LIBRARY_PATH — каталог с архивами книг}
         target: /library
         read_only: true
         bind:
           create_host_path: false
 
 volumes:
-  app-db:
-  cover-cache:
   caddy-data:
   caddy-config:
