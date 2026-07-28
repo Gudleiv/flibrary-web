@@ -8,6 +8,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { COLLECTION as C } from '../db/index.js';
 import { displayAuthorName, GENRE_LABEL } from '../db/labels.js';
+import { buildFtsQuery, buildLikePattern } from '../search/fts.js';
 
 interface GenreRow {
   code: string;
@@ -147,28 +148,59 @@ const catalogRoutes: FastifyPluginAsync = async (fastify) => {
       const limit = request.query.limit ?? 50;
       const offset = request.query.offset ?? 0;
 
-      // SearchName в коллекции — uppercase (как и SearchTitle), по нему и ищем префиксом.
-      // Спецсимволы LIKE экранируем: '%' во вводе иначе означал бы «любой остаток».
-      const filter =
-        q === undefined || q.trim() === ''
+      // Ищем двумя способами сразу, потому что поодиночке ни один не покрывает того,
+      // что от списка ждут.
+      //
+      // `SearchName` — это uppercase ФАМИЛИИ и только её (`inpx.cpp::Store` кладёт туда
+      // `last.toUpper()`), поэтому по нему находится «оулинг» в середине фамилии, но
+      // никогда — имя или отчество. Отсюда второй способ: FTS-таблица `Authors_Search`
+      // коллекции построена по всем трём частям имени, и её токенайзер, в отличие от
+      // SQLite-функции upper(), знает про кириллицу — «джоан» там найдёт «Джоан».
+      //
+      // Наоборот тоже: FTS ищет по началу слова, серединой слова в неё не попасть.
+      // Вместе получается «с любого места фамилии или с начала любой части имени».
+      const raw = q?.trim() ?? '';
+      // Спецсимволы LIKE экранируются внутри buildLikePattern: '%' во вводе иначе
+      // означал бы «любой остаток».
+      const like = raw === '' ? null : buildLikePattern(raw, 'substring');
+      // null бывает на вводе из одних кавычек: искать после очистки нечего.
+      const fts = raw === '' ? null : buildFtsQuery(raw, 'prefix');
+      // Префикс фамилии — не фильтр, а порядок: раньше список искал именно так, и
+      // «Роулинг» по запросу «роулинг» должна остаться первой, а не потеряться среди
+      // однофамильцев по середине строки.
+      const prefix = raw === '' ? null : buildLikePattern(raw, 'prefix');
+
+      const match =
+        like === null
           ? null
-          : `${q
-              .trim()
-              .toUpperCase()
-              .replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+          : [
+              "a.SearchName LIKE :like ESCAPE '\\'",
+              // MATCH требует неквалифицированное имя таблицы и не работает с алиасом.
+              fts === null
+                ? null
+                : `a.AuthorID IN (SELECT rowid FROM ${C}.Authors_Search WHERE Authors_Search MATCH :fts)`,
+            ]
+              .filter((part) => part !== null)
+              .join(' OR ');
 
       const where = [
         // Справочник авторов коллекции содержит записи, не связанные ни с одной книгой:
         // в списке они выглядели бы как авторы без единой книги.
         `EXISTS (SELECT 1 FROM ${C}.Author_List al2 WHERE al2.AuthorID = a.AuthorID)`,
-        filter === null ? null : "a.SearchName LIKE :filter ESCAPE '\\'",
+        match === null ? null : `(${match})`,
       ]
         .filter((part) => part !== null)
         .join(' AND ');
 
+      const order =
+        prefix === null
+          ? 'a.SearchName, a.AuthorID'
+          : `CASE WHEN a.SearchName LIKE :prefix ESCAPE '\\' THEN 0 ELSE 1 END,
+             a.SearchName, a.AuthorID`;
+
       const { total } = db.read
         .prepare(`SELECT count(*) AS total FROM ${C}.Authors a WHERE ${where}`)
-        .get({ filter }) as { total: number };
+        .get({ like, fts }) as { total: number };
 
       const rows = db.read
         .prepare(
@@ -180,10 +212,10 @@ const catalogRoutes: FastifyPluginAsync = async (fastify) => {
                     WHERE al.AuthorID = a.AuthorID) AS books
              FROM ${C}.Authors a
             WHERE ${where}
-            ORDER BY a.SearchName, a.AuthorID
+            ORDER BY ${order}
             LIMIT :limit OFFSET :offset`,
         )
-        .all({ filter, limit, offset }) as Array<{
+        .all({ like, fts, prefix, limit, offset }) as Array<{
         authorId: number;
         name: string;
         books: number;

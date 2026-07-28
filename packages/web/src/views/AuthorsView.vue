@@ -1,10 +1,10 @@
 <script setup lang="ts">
-// Раздел «Авторы»: список с поиском по началу имени слева, книги автора — справа.
+// Раздел «Авторы»: боковой список с поиском, книги выбранного автора — рядом.
 //
 // Авторов в коллекции десятки тысяч, поэтому список постраничный (`GET /authors`),
 // а не «загрузить всё и фильтровать на клиенте».
 
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { keepPreviousData, useQuery } from '@tanstack/vue-query';
 import Button from 'primevue/button';
@@ -29,16 +29,28 @@ const selected = computed(() => {
 const filter = ref('');
 const sidePage = ref(0);
 
+/**
+ * Запрос отстаёт от ввода: поиск по любой части имени — это скан справочника,
+ * индексом его не ускорить, и посылать его на каждую букву незачем.
+ */
+const query = ref('');
+let debounce: ReturnType<typeof setTimeout> | undefined;
+watch(filter, (value) => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => (query.value = value), 250);
+});
+onBeforeUnmount(() => clearTimeout(debounce));
+
 // Новый фильтр — снова с первой страницы: иначе «Толстой» на третьей странице
 // прошлого фильтра открывается пустым списком.
-watch(filter, () => {
+watch(query, () => {
   sidePage.value = 0;
 });
 
 const authors = useQuery({
-  queryKey: computed(() => ['authors', filter.value, sidePage.value]),
+  queryKey: computed(() => ['authors', query.value, sidePage.value]),
   queryFn: () =>
-    getAuthors({ q: filter.value.trim() || undefined, limit: SIDE_PAGE, offset: sidePage.value }),
+    getAuthors({ q: query.value.trim() || undefined, limit: SIDE_PAGE, offset: sidePage.value }),
   placeholderData: keepPreviousData,
   staleTime: 5 * 60_000,
 });
@@ -69,7 +81,7 @@ const { page, perPage, results, items: books, total, goToPage } = useBrowse(wher
   <BrowseLayout title="Авторы" :subtitle="`${sideTotal.toLocaleString('ru-RU')} в коллекции`">
     <template #side>
       <div class="stack" style="gap: 0.5rem">
-        <InputText v-model="filter" placeholder="Начало фамилии" />
+        <InputText v-model="filter" placeholder="Фамилия или имя" />
 
         <div v-if="authors.isLoading.value" style="display: grid; place-items: center">
           <ProgressSpinner style="width: 28px; height: 28px" />
@@ -117,7 +129,7 @@ const { page, perPage, results, items: books, total, goToPage } = useBrowse(wher
     </template>
 
     <Message v-if="selected === null" severity="secondary" :closable="false">
-      Выберите автора слева.
+      Выберите автора.
     </Message>
 
     <template v-else>

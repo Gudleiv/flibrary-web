@@ -316,7 +316,10 @@ paths:
       parameters:
         - name: q
           in: query
-          description: Префикс имени; ищется по нормализованному `SearchName` коллекции.
+          description: >-
+            Часть имени. Находится с любого места фамилии (нормализованный `SearchName`
+            коллекции — это она) и с начала любой другой части имени (FTS-таблица
+            `Authors_Search`). Совпадения по началу фамилии идут первыми.
           schema: { type: string, maxLength: 128 }
         - name: limit
           in: query
