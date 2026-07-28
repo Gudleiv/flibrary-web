@@ -10,7 +10,15 @@
 
 import Database from 'better-sqlite3';
 import JSZip from 'jszip';
-import { createWriteStream, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  createWriteStream,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
@@ -152,9 +160,14 @@ function transliterate(value: string): string {
 
 const dbPath = join(options.outDir, 'collection.db');
 const archivesDir = join(options.outDir, 'archives');
+// «Дополнительная папка» коллекции — та же, что в настройках FLibrary. Отзывы читателей
+// лежат в её подкаталоге reviews/ архивами 7z (см. inpx.cpp::CollectReviews).
+const additionalDir = join(options.outDir, 'additional');
+const reviewsDir = join(additionalDir, 'reviews');
 
 mkdirSync(options.outDir, { recursive: true });
 mkdirSync(archivesDir, { recursive: true });
+mkdirSync(reviewsDir, { recursive: true });
 rmSync(dbPath, { force: true });
 
 const db = new Database(dbPath);
@@ -464,6 +477,75 @@ db.transaction(() => {
   for (const [bookId, size] of sizes) updateSize.run(size, bookId);
 })();
 
+// --- отзывы читателей --------------------------------------------------------
+//
+// Слепок с форума библиотеки: JSON-массив на книгу внутри 7z-архива. Собирается внешним
+// 7z — чистых JS-упаковщиков 7z нет; без него отзывов в фикстурах просто не будет,
+// и это не повод ронять генерацию.
+
+const REVIEW_TEXTS = [
+  'Прочитал за вечер, не оторваться.',
+  'Начало затянуто, но со второй части всё встаёт на места.',
+  'Перевод местами корявый, а книга хорошая.',
+  'Не моё совсем. Осилил через силу.',
+  'Перечитываю третий раз, каждый раз нахожу новое.',
+];
+
+const REVIEW_NICKS = ['knizhnik', 'Мария', 'reader2007', 'старый_червь', 'Аноним', 'pavel_k'];
+
+function generateReviews(): number {
+  try {
+    execFileSync('7z', ['i'], { stdio: 'ignore' });
+  } catch {
+    console.log('7z не найден — отзывы в фикстуры не попадут');
+    return 0;
+  }
+
+  const insertReview = db.prepare('INSERT INTO Reviews (BookID, Folder) VALUES (?, ?)');
+  const archiveName = '000001.7z';
+  const staging = join(additionalDir, 'staging');
+  rmSync(staging, { force: true, recursive: true });
+  mkdirSync(staging, { recursive: true });
+
+  const folderById = new Map(archiveNames.map((item) => [item.FolderID, item.FolderTitle]));
+  // Отзывы есть далеко не у каждой книги — как и в настоящей коллекции.
+  const withReviews = books.filter(() => rng.bool(0.2));
+
+  db.transaction(() => {
+    for (const book of withReviews) {
+      // Имя записи — ровно то, что строит FLibrary: FolderTitle#FileNameExt.
+      const entry = `${folderById.get(book.folderId) ?? ''}#${book.fileName}.fb2`;
+      writeFileSync(
+        join(staging, entry),
+        JSON.stringify(
+          Array.from({ length: rng.int(1, 4) }, () => ({
+            name: rng.pick(REVIEW_NICKS),
+            time: `20${rng.int(7, 19).toString().padStart(2, '0')}-${rng
+              .int(1, 12)
+              .toString()
+              .padStart(2, '0')}-${rng.int(1, 28).toString().padStart(2, '0')} ${rng
+              .int(0, 23)
+              .toString()
+              .padStart(2, '0')}:${rng.int(0, 59).toString().padStart(2, '0')}`,
+            text: `${rng.pick(REVIEW_TEXTS)}<br/>${rng.pick(REVIEW_TEXTS)}`,
+          })),
+        ),
+        'utf8',
+      );
+      // Folder в БД — имя архива вместе с расширением (inpx.cpp::CollectReviews).
+      insertReview.run(book.id, archiveName);
+    }
+  })();
+
+  rmSync(join(reviewsDir, archiveName), { force: true });
+  execFileSync('7z', ['a', '-bd', '-bso0', join(reviewsDir, archiveName), join(staging, '*')]);
+  rmSync(staging, { force: true, recursive: true });
+
+  return withReviews.length;
+}
+
+const reviewCount = generateReviews();
+
 // --- FTS и служебное --------------------------------------------------------
 
 // Индексы внешние (content=), поэтому после массовой вставки их надо пересобрать —
@@ -497,4 +579,5 @@ console.log(`    аннотаций       ${count('SELECT count(*) n FROM Annota
 console.log(`    жанров          ${count('SELECT count(*) n FROM Genres')}`);
 console.log(`    оценок юзера    ${count('SELECT count(*) n FROM Books_User')}`);
 if (options.archives) console.log(`  ${archivesDir}`);
+if (reviewCount > 0) console.log(`  ${reviewsDir} (отзывы к ${reviewCount} книгам)`);
 stats.close();

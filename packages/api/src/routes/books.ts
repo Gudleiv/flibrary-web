@@ -14,6 +14,7 @@ import {
 } from '../content/opds.js';
 import type { CoverSize } from '../cache/covers.js';
 import { parseFb2 } from '../content/fb2.js';
+import { readReviews, reviewsDirectory } from '../content/reviews.js';
 import { mapBookRow, normalizeExt, type BookRow } from './mappers.js';
 import { loadAuthors, loadGenres, loadKeywords } from './relations.js';
 
@@ -167,6 +168,57 @@ const bookRoutes: FastifyPluginAsync = async (fastify) => {
 
       await details.put(bookId, parsed);
       return parsed;
+    },
+  );
+
+  /**
+   * Отзывы читателей — исторический слепок с форума библиотеки.
+   *
+   * Живут вне БД, в 7z-архивах «дополнительной папки» коллекции. Не настроена или
+   * архивов нет — пустой список, а не ошибка: у большинства коллекций отзывов нет,
+   * и раздел просто не появляется.
+   */
+  fastify.get<{ Params: { bookId: number } }>(
+    '/books/:bookId/reviews',
+    { schema: { params: bookIdParams } },
+    async (request, reply) => {
+      const { bookId } = request.params;
+
+      const directory = reviewsDirectory(config.additionalDir);
+      if (directory === null) return { items: [] };
+
+      // Имя записи внутри архива — FolderTitle, решётка, имя файла с расширением
+      // (`inpx.cpp::ReadReviews`).
+      //
+      // Ext тут НЕ дописывается: Books_View.FileName — это уже `FileName || Ext`
+      // (голое имя лежит в BaseFileName). Отсюда и расхождение в самой FLibrary:
+      // запросы по таблице Books склеивают `b.FileName || b.Ext`, а по представлению
+      // (AuthorReviewModel) берут FileName как есть — и оба правы.
+      const row = db.read
+        .prepare(
+          `SELECT r.Folder AS archive,
+                  f.FolderTitle || '#' || b.FileName AS entry
+             FROM ${C}.Reviews r
+             JOIN ${C}.Books_View b ON b.BookID = r.BookID
+             JOIN ${C}.Folders f ON f.FolderID = b.FolderID
+            WHERE r.BookID = ?`,
+        )
+        .get(bookId) as { archive: string; entry: string } | undefined;
+
+      if (row === undefined) return { items: [] };
+
+      try {
+        return { items: await readReviews(directory, row.archive, row.entry) };
+      } catch (error) {
+        // Сломанный или недоступный архив — это про сервер, а не про книгу; молчать
+        // о нём нельзя, но и карточку он валить не должен.
+        request.log.warn({ err: error, bookId }, 'не удалось прочитать архив отзывов');
+        return reply.status(503).type('application/problem+json').send({
+          title: 'Отзывы недоступны',
+          status: 503,
+          detail: 'Не удалось прочитать архив отзывов коллекции.',
+        });
+      }
     },
   );
 

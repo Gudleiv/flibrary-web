@@ -194,6 +194,34 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '502': { $ref: '#/components/responses/BadGateway' }
 
+  /books/{bookId}/reviews:
+    get:
+      tags: [books]
+      summary: Отзывы читателей
+      description: |
+        Исторический слепок с форума библиотеки: ник, дата, текст. В БД коллекции
+        отзывов нет — там только указатель на 7z-архив в «дополнительной папке»
+        коллекции (`ADDITIONAL_DIR`).
+
+        Если папка не настроена или у коллекции её нет, ручка отдаёт пустой список,
+        а не ошибку: отзывы — необязательная часть коллекции.
+      parameters:
+        - $ref: '#/components/parameters/BookId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Review' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /books/{bookId}/cover:
     get:
       tags: [books]
@@ -705,6 +733,16 @@ components:
           description: >-
             Страниц примерно: символы, делённые на 2000, — та же формула, что у
             десктопного FLibrary, чтобы цифры сходились.
+
+    Review:
+      type: object
+      required: [name, time, text]
+      properties:
+        name:
+          type: string
+          description: Ник читателя; «Аноним», если подписи в слепке нет.
+        time: { type: string }
+        text: { type: string }
 
     AuthorRef:
       type: object

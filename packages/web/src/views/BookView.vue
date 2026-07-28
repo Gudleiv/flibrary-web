@@ -8,7 +8,7 @@ import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 import Tag from 'primevue/tag';
 
-import { downloadBook, getBook, getBookDetails, getCollection } from '@/api/client';
+import { downloadBook, getBook, getBookDetails, getBookReviews, getCollection } from '@/api/client';
 import BookCover from '@/components/BookCover.vue';
 import FlagIcon from '@/components/FlagIcon.vue';
 import MetaRow from '@/components/MetaRow.vue';
@@ -46,8 +46,23 @@ const fileDetails = useQuery({
   staleTime: Infinity,
 });
 
+/**
+ * Отзывы читателей: исторический слепок с форума библиотеки. Живут в архивах
+ * «дополнительной папки» коллекции, которой у большинства коллекций нет, — тогда
+ * приходит пустой список и раздела просто не будет.
+ */
+const bookReviews = useQuery({
+  queryKey: computed(() => ['book-reviews', bookId.value]),
+  queryFn: () => getBookReviews(bookId.value),
+  retry: false,
+  staleTime: Infinity,
+});
+
 const data = computed(() => book.data.value);
 const file = computed(() => (fileDetails.isError.value ? undefined : fileDetails.data.value));
+const reviews = computed(() =>
+  bookReviews.isError.value ? [] : (bookReviews.data.value?.items ?? []),
+);
 
 /** Объём текста — как его показывает FLibrary: «букв ≈ страниц, слов». */
 const textSize = computed(() => {
@@ -285,6 +300,23 @@ async function download(format: string): Promise<void> {
                 </li>
               </ol>
             </section>
+
+            <!-- Отзывы: слепок с форума библиотеки. Их нет у большинства коллекций,
+                 поэтому пустой раздел не рисуем вовсе. -->
+            <section v-if="reviews.length > 0" class="stack" style="gap: 0.5rem">
+              <h3 style="margin: 0; font-size: 1rem">Отзывы · {{ reviews.length }}</h3>
+              <article
+                v-for="(review, index) in reviews"
+                :key="`${index}-${review.name}`"
+                class="review"
+              >
+                <div class="row" style="gap: 0.5rem">
+                  <span style="font-weight: 600">{{ review.name }}</span>
+                  <span class="muted">{{ formatDate(review.time) ?? review.time }}</span>
+                </div>
+                <p style="margin: 0.25rem 0 0; white-space: pre-line">{{ review.text }}</p>
+              </article>
+            </section>
           </div>
         </div>
       </template>
@@ -304,5 +336,11 @@ async function download(format: string): Promise<void> {
 
 .chapters li {
   padding: 0.1rem 0;
+}
+
+/* Отзывов бывает много — разделяем их линией, иначе стена текста без границ. */
+.review {
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--p-content-border-color);
 }
 </style>

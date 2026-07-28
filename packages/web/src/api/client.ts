@@ -78,6 +78,11 @@ export async function getBookDetails(bookId: number) {
   return unwrap(await api.GET('/books/{bookId}/details', { params: { path: { bookId } } }));
 }
 
+/** Отзывы читателей. Пустой список — нормальный ответ: отзывы есть не у всех коллекций. */
+export async function getBookReviews(bookId: number) {
+  return unwrap(await api.GET('/books/{bookId}/reviews', { params: { path: { bookId } } }));
+}
+
 export async function getCollection() {
   return unwrap(await api.GET('/collection'));
 }

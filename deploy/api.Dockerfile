@@ -34,6 +34,13 @@ FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
+# 7-Zip — для отзывов читателей: они лежат в 7z-архивах «дополнительной папки»
+# коллекции (ADDITIONAL_DIR). Рабочих чистых JS-распаковщиков 7z нет, а wasm-сборка
+# ради необязательной функции дороже этой строчки. Без ADDITIONAL_DIR не нужен вовсе.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends p7zip-full \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/contract ./packages/contract
 COPY --from=build /app/packages/api/node_modules ./packages/api/node_modules
