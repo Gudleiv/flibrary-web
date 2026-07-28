@@ -12,6 +12,10 @@
 //    множественный выбор станет бесполезен. Так работает фасетная навигация
 //    везде — и это единственная причина, по которой у каждого фасета может быть
 //    своё множество, а не одно общее.
+//    Исключение — жанр: у книги их несколько, и выбранные жанры складываются по
+//    AND, а не по ИЛИ (см. excludes у genre). Тогда правило переворачивается:
+//    считать надо ровно по тому, что уже отфильтровано, иначе счётчик обещает
+//    «фэнтези 5000», а щелчок по нему даёт полсотни детских фэнтези.
 // 2. Отдаём топ-N по количеству, а не все значения. Авторов и серий в выдаче
 //    могут быть тысячи; полный список никто не читает, а стоит он дорого.
 //    Обрезание не замалчиваем — в ответе есть truncated.
@@ -55,7 +59,18 @@ export interface FacetSpec {
    * (см. решение 1 в шапке файла).
    */
   excludes: string[];
+  /**
+   * Запрос подписей для выбранных значений, под которые не попало ни одной книги:
+   * `SELECT значение, подпись ... WHERE значение IN (?, ?, …)`.
+   *
+   * Такое значение всё равно надо показать (со счётчиком 0) — иначе выбранный
+   * автор пропадает из панели ровно тогда, когда выдача из-за него и опустела,
+   * и снять фильтр становится нечем. null — значение говорит само за себя.
+   */
+  lookup: ((count: number) => string) | null;
 }
+
+const placeholders = (count: number): string => Array.from({ length: count }, () => '?').join(', ');
 
 /** ФИО одной строкой — в коллекции оно разложено на три колонки. */
 const AUTHOR_LABEL = `trim(a.LastName || ' ' || coalesce(a.FirstName, '') || ' ' || coalesce(a.MiddleName, ''))`;
@@ -77,6 +92,7 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     limit: TOP_LIMIT,
     present: 'count',
     excludes: ['lang'],
+    lookup: null,
   },
   ext: {
     value: 'h.ext',
@@ -88,6 +104,7 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     limit: TOP_LIMIT,
     present: 'count',
     excludes: ['ext'],
+    lookup: null,
   },
   genre: {
     value: 'gl.GenreCode',
@@ -101,7 +118,14 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     tieBreak: 'value',
     limit: TOP_LIMIT,
     present: 'count',
-    excludes: ['genre'],
+    // Единственный фасет, который сужает сам себя (см. решение 1 в шапке файла):
+    // жанров у книги несколько, выбранные складываются по AND, и «какие ещё жанры
+    // есть у найденного» — это счётчики по уже отфильтрованному множеству.
+    excludes: [],
+    // Закреплять здесь нечего: выбранный жанр из фильтра не выкидывается, поэтому
+    // либо он есть у найденных книг, либо не найдено ничего вовсе. Подписи жанров
+    // клиент знает сам — он держит весь справочник ради дерева выбора.
+    lookup: null,
   },
   year: {
     value: 'CAST(h.year AS TEXT)',
@@ -114,6 +138,7 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     limit: SCALE_LIMIT,
     present: 'value',
     excludes: ['year'],
+    lookup: null,
   },
   libRate: {
     value: 'CAST(h.libRate AS TEXT)',
@@ -126,6 +151,7 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     limit: SCALE_LIMIT,
     present: 'value',
     excludes: ['libRate'],
+    lookup: null,
   },
   author: {
     // Значение — идентификатор: имена не уникальны, а вернуть значение фасета
@@ -142,6 +168,12 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     // Текстовый предикат author не выкидываем: это поисковый запрос, а не выбор
     // значения фасета — сузить выдачу он должен и для счётчиков тоже.
     excludes: ['authorId'],
+    // Идентификатор приходит строкой, а колонка числовая — сравнение отрабатывает
+    // по affinity колонки, поэтому индекс по AuthorID остаётся в деле.
+    lookup: (count) =>
+      `SELECT CAST(a.AuthorID AS TEXT) AS value, ${AUTHOR_LABEL} AS label
+         FROM ${C}.Authors a
+        WHERE a.AuthorID IN (${placeholders(count)})`,
   },
   series: {
     value: 'CAST(s.SeriesID AS TEXT)',
@@ -154,6 +186,10 @@ export const FACET_SPECS: Record<FacetField, FacetSpec> = {
     limit: TOP_LIMIT,
     present: 'count',
     excludes: ['seriesId'],
+    lookup: (count) =>
+      `SELECT CAST(s.SeriesID AS TEXT) AS value, s.SeriesTitle AS label
+         FROM ${C}.Series s
+        WHERE s.SeriesID IN (${placeholders(count)})`,
   },
 };
 
@@ -257,34 +293,43 @@ export interface FacetRow {
   count: number;
 }
 
+function toValue(field: FacetField, row: FacetRow & { value: string }): FacetValue {
+  // Подпись автора приводим к тому же виду, что и в карточке книги: иначе в панели
+  // уточнения стоял бы «Unknown author», а в выдаче — «Неизвестный автор».
+  const label = field === 'author' ? displayAuthorName(row.label) : row.label;
+  return {
+    value: row.value,
+    // Подпись отдаём только когда она отличается от значения: для языка и
+    // расширения дублировать её в JSON незачем.
+    ...(label === null || label === row.value ? {} : { label }),
+    count: row.count,
+  };
+}
+
 /**
  * Строки из БД → фасет контракта.
  *
  * Запрашивается на одну строку больше лимита: лишняя строка и есть признак того,
  * что значений больше, чем отдано.
+ *
+ * `selected` — выбранные значения, которых в счётчиках не оказалось: они идут в
+ * начало со счётчиком 0 и на признак обрезания не влияют, потому что не из выдачи.
  */
-export function toFacet(plan: FacetPlan, rows: FacetRow[]): Facet {
+export function toFacet(plan: FacetPlan, rows: FacetRow[], selected: FacetRow[] = []): Facet {
   const { field, spec } = plan;
   const truncated = rows.length > spec.limit;
   const values: FacetValue[] = rows
     .slice(0, spec.limit)
     .filter((row): row is FacetRow & { value: string } => row.value !== null)
-    .map((row) => {
-      // Подпись автора приводим к тому же виду, что и в карточке книги: иначе в панели
-      // уточнения стоял бы «Unknown author», а в выдаче — «Неизвестный автор».
-      const label = field === 'author' ? displayAuthorName(row.label) : row.label;
-      return {
-        value: row.value,
-        // Подпись отдаём только когда она отличается от значения: для языка и
-        // расширения дублировать её в JSON незачем.
-        ...(label === null || label === row.value ? {} : { label }),
-        count: row.count,
-      };
-    });
+    .map((row) => toValue(field, row));
 
   if (spec.present === 'value') {
     values.sort((left, right) => Number(right.value) - Number(left.value));
   }
 
-  return { field, values, truncated };
+  const missing = selected
+    .filter((row): row is FacetRow & { value: string } => row.value !== null)
+    .map((row) => toValue(field, row));
+
+  return { field, values: [...missing, ...values], truncated };
 }
