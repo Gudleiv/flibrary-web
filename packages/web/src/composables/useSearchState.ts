@@ -47,7 +47,10 @@ export const PANEL_FACETS: FacetField[] = ['genre', 'author', 'series', 'lang', 
 /** Ограничено сверху контрактом: limit больше 200 API не принимает. */
 export const PER_PAGE_OPTIONS = [20, 50, 100, 200];
 
-const DEFAULT_PER_PAGE = 50;
+// Двадцать, а не пятьдесят: на страницу выдачи приходится столько же запросов обложек,
+// и полсотни сразу — это и лишняя работа content-service, и длинная лента,
+// до конца которой доходят редко.
+const DEFAULT_PER_PAGE = 20;
 
 export const createEmptyForm = (): SearchForm => ({
   title: '',

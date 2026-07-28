@@ -56,7 +56,7 @@ const { page, perPage, results, items: books, total, goToPage } = useBrowse(wher
     </template>
 
     <Message v-if="selected === null" severity="secondary" :closable="false">
-      Выберите язык слева.
+      Выберите язык.
     </Message>
 
     <BookList

@@ -218,19 +218,6 @@ function onFacetToggle(field: FacetField, value: string): void {
   submit();
 }
 
-/**
- * Уточнения переживают новый поиск — так и задумано: найдя автора, дальше ищут его
- * же книги. Но когда из-за них не находится ничего, «ослабьте фильтры» звучит как
- * совет про поля формы, а виноваты отметки в панели, куда никто не смотрит.
- */
-const emptyHint = computed(() => {
-  const { authors, series, exts, refineGenres } = applied.value;
-  const refined = authors.length + series.length + exts.length + refineGenres.length > 0;
-  return refined
-    ? 'Ничего не найдено. Уточнения слева при новом поиске не сбрасываются — возможно, дело в них.'
-    : 'Ничего не найдено. Попробуйте ослабить фильтры.';
-});
-
 function onPage(page: number, perPage: number): void {
   apply({ page, perPage });
 }
@@ -392,7 +379,6 @@ function reset(): void {
       :loading="results.isLoading.value"
       :fetching="results.isFetching.value"
       :took-ms="tookMs"
-      :empty-hint="emptyHint"
       :error="
         results.isError.value ? ((results.error.value as Error)?.message ?? 'Ошибка поиска') : null
       "
