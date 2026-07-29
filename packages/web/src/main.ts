@@ -11,6 +11,10 @@ import '@/assets/main.css';
 
 import App from '@/App.vue';
 import { router } from '@/router';
+import { initTheme } from '@/lib/theme';
+
+// До монтирования: иначе первый кадр рисуется светлым и мигает.
+initTheme();
 
 createApp(App)
   .use(createPinia())

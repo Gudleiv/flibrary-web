@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { keepPreviousData, useQuery } from '@tanstack/vue-query';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -29,6 +29,8 @@ import {
   type GenreSelection,
 } from '@/lib/genres';
 import { compareByLanguageName, languageName } from '@/lib/lang';
+import { scrollToElement } from '@/lib/scroll';
+import { NARROW, useMediaQuery } from '@/composables/useMediaQuery';
 import { useSearchState, type SearchForm } from '@/composables/useSearchState';
 
 const { form, applied, query, facetQuery, submit, apply } = useSearchState();
@@ -222,6 +224,18 @@ function onPage(page: number, perPage: number): void {
   apply({ page, perPage });
 }
 
+const narrow = useMediaQuery(NARROW);
+const resultsEl = ref<HTMLElement | null>(null);
+
+/**
+ * На телефоне форма, сортировка и панель уточнения занимают несколько экранов и стоят
+ * над выдачей: после «Найти» без прокрутки не видно, что вообще что-то нашлось.
+ */
+function onSubmit(): void {
+  submit();
+  if (narrow.value) void nextTick(() => scrollToElement(resultsEl.value));
+}
+
 function reset(): void {
   Object.assign(form, {
     title: '',
@@ -245,7 +259,7 @@ function reset(): void {
       <Card>
         <template #title>Поиск</template>
         <template #content>
-          <form class="stack" @submit.prevent="submit">
+          <form class="stack" @submit.prevent="onSubmit">
             <!-- Два поля вместо «строки и селекта где искать»: так спрашивают почти
                  всегда, а выбирать поле перед вводом приходилось каждый раз. -->
             <InputText v-model="form.title" placeholder="Название" autofocus />
@@ -371,18 +385,22 @@ function reset(): void {
       </Card>
     </div>
 
-    <BookList
-      :items="items"
-      :total="total"
-      :page="applied.page"
-      :per-page="applied.perPage"
-      :loading="results.isLoading.value"
-      :fetching="results.isFetching.value"
-      :took-ms="tookMs"
-      :error="
-        results.isError.value ? ((results.error.value as Error)?.message ?? 'Ошибка поиска') : null
-      "
-      @page="onPage"
-    />
+    <div ref="resultsEl">
+      <BookList
+        :items="items"
+        :total="total"
+        :page="applied.page"
+        :per-page="applied.perPage"
+        :loading="results.isLoading.value"
+        :fetching="results.isFetching.value"
+        :took-ms="tookMs"
+        :error="
+          results.isError.value
+            ? ((results.error.value as Error)?.message ?? 'Ошибка поиска')
+            : null
+        "
+        @page="onPage"
+      />
+    </div>
   </div>
 </template>

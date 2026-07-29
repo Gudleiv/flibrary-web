@@ -22,7 +22,14 @@ import { genreTitles } from '@/lib/genres';
 import { useBrowse } from '@/composables/useBrowse';
 
 const route = useRoute();
-const selected = computed(() => (route.params.code as string | undefined) ?? null);
+
+// Необязательный параметр маршрута приходит пустой строкой, а не undefined: без этой
+// проверки `/genres` без выбора считался выбранным жанром «» и открывался пустой
+// выдачей вместо приглашения выбрать.
+const selected = computed(() => {
+  const code = route.params.code;
+  return typeof code === 'string' && code !== '' ? code : null;
+});
 
 const genres = useQuery({ queryKey: ['genres'], queryFn: getGenres, staleTime: 10 * 60_000 });
 
@@ -52,7 +59,7 @@ const count = (value: number | undefined): string => (value ?? 0).toLocaleString
 </script>
 
 <template>
-  <BrowseLayout title="Жанры">
+  <BrowseLayout title="Жанры" pick-label="Выбрать жанр" :selection="selected">
     <template #side>
       <Accordion :value="openPanels" multiple>
         <AccordionPanel v-for="root in roots" :key="root.code" :value="root.code">

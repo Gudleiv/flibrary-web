@@ -4,7 +4,7 @@
 // Авторов в коллекции десятки тысяч, поэтому список постраничный (`GET /authors`),
 // а не «загрузить всё и фильтровать на клиенте».
 
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { keepPreviousData, useQuery } from '@tanstack/vue-query';
 import Button from 'primevue/button';
@@ -17,6 +17,7 @@ import BookList from '@/components/BookList.vue';
 import BrowseLayout from '@/components/BrowseLayout.vue';
 import { getAuthors } from '@/api/client';
 import { useBrowse } from '@/composables/useBrowse';
+import { scrollToElement } from '@/lib/scroll';
 
 const SIDE_PAGE = 50;
 
@@ -75,12 +76,29 @@ const where = computed<SearchNode | null>(() =>
 );
 
 const { page, perPage, results, items: books, total, goToPage } = useBrowse(where);
+
+/** Начало справочника: к нему возвращаемся при листании. */
+const sideTop = ref<HTMLElement | null>(null);
+
+/**
+ * Прокрутка к первому имени: справочник длиннее экрана, и без неё «дальше» оставляет
+ * экран на середине предыдущей полусотни — а там уже другие авторы.
+ */
+function goToSidePage(next: number): void {
+  sidePage.value = Math.max(0, next);
+  void nextTick(() => scrollToElement(sideTop.value));
+}
 </script>
 
 <template>
-  <BrowseLayout title="Авторы" :subtitle="`${sideTotal.toLocaleString('ru-RU')} в коллекции`">
+  <BrowseLayout
+    title="Авторы"
+    :subtitle="`${sideTotal.toLocaleString('ru-RU')} в коллекции`"
+    pick-label="Выбрать автора"
+    :selection="selected"
+  >
     <template #side>
-      <div class="stack" style="gap: 0.5rem">
+      <div ref="sideTop" class="stack" style="gap: 0.5rem">
         <InputText v-model="filter" placeholder="Фамилия или имя" />
 
         <div v-if="authors.isLoading.value" style="display: grid; place-items: center">
@@ -104,25 +122,27 @@ const { page, perPage, results, items: books, total, goToPage } = useBrowse(wher
           </RouterLink>
         </nav>
 
-        <div v-if="sideTotal > SIDE_PAGE" class="row" style="justify-content: space-between">
+        <!-- Кнопки крупные и без `text`: на телефоне в маленькую иконку без границ
+             попадают пальцем через раз. -->
+        <div v-if="sideTotal > SIDE_PAGE" class="side-pager">
           <Button
-            text
-            size="small"
             icon="pi pi-chevron-left"
+            severity="secondary"
+            outlined
             :disabled="sidePage === 0"
             aria-label="Предыдущие авторы"
-            @click="sidePage = Math.max(0, sidePage - SIDE_PAGE)"
+            @click="goToSidePage(sidePage - SIDE_PAGE)"
           />
           <span class="muted">
             {{ sidePage + 1 }}–{{ Math.min(sidePage + SIDE_PAGE, sideTotal) }}
           </span>
           <Button
-            text
-            size="small"
             icon="pi pi-chevron-right"
+            severity="secondary"
+            outlined
             :disabled="!hasMore"
             aria-label="Следующие авторы"
-            @click="sidePage += SIDE_PAGE"
+            @click="goToSidePage(sidePage + SIDE_PAGE)"
           />
         </div>
       </div>
